@@ -3,9 +3,6 @@ import asyncio
 from time import sleep
 import logging
 
-
-from concurrent.futures import ThreadPoolExecutor
-
 logging.basicConfig(level=logging.INFO)
 
 def test_methods():
