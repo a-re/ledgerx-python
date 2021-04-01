@@ -1,5 +1,5 @@
 from typing import Dict, List, Any
-from ledgerx import API_BASE, LEGACY_API_BASE
+from ledgerx import API_BASE, LEGACY_API_BASE, WEBSOCKET_BASE
 import ledgerx
 
 
@@ -18,6 +18,13 @@ def gen_url(path: str) -> str:
 
 def gen_legacy_url(path: str) -> str:
     return f"{LEGACY_API_BASE}{path}"
+
+
+def gen_websocket_url(include_api_key: bool = False) -> str:
+    url = f"{WEBSOCKET_BASE}"
+    if include_api_key:
+        url += f"?token={ledgerx.api_key}"
+    return url
 
 
 def has_next_url(response_data: Dict) -> bool:

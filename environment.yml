@@ -12,6 +12,8 @@ dependencies:
     - pytest
     - pip
     - pip:
+        - websockets
+        - python-dotenv
         - Deprecated
         # dev resources
         - twine
