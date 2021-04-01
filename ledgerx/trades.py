@@ -2,13 +2,14 @@ from typing import List, Dict, Callable
 from ledgerx.http_client import HttpClient
 from ledgerx.util import gen_url
 from ledgerx.generic_resource import GenericResource
+from ledgerx import DEFAULT_LIMIT
 
 
 class Trades:
     default_list_params = dict(
-        status_type=201, limit=50, min_size=1, mine=False, asset="CBTC"
+        status_type=201, limit=DEFAULT_LIMIT, min_size=1, mine=False, asset="CBTC"
     )
-    default_list_all_params = dict()
+    default_list_all_params = dict(limit=DEFAULT_LIMIT*100)
 
     @classmethod
     def list(cls, params: Dict = {}) -> List[Dict]:

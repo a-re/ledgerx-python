@@ -30,6 +30,7 @@ class HttpClient:
         res = None
         while True:
             res = requests.get(url, headers=headers, params=params)
+            logging.debug(f"get {url} {res}")
             if res.status_code == 429:
                 if delay == DELAY_SECONDS:
                     delay += 1
@@ -60,6 +61,7 @@ class HttpClient:
         """
         headers = gen_headers(include_api_key)
         res = requests.post(url, headers=headers, json=data)
+        logging.debug(f"post {url} {res}")
         res.raise_for_status()
         return res
 
@@ -79,5 +81,6 @@ class HttpClient:
         """
         headers = gen_headers(include_api_key)
         res = requests.delete(url, params=params, headers=headers)
+        logging.debug(f"delete {url} {res}")
         res.raise_for_status()
         return res

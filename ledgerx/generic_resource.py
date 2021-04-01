@@ -5,17 +5,23 @@ from ledgerx import DELAY_SECONDS
 from ledgerx.http_client import HttpClient
 from ledgerx.util import has_next_url
 
+import logging
+
 
 class GenericResource:
     @classmethod
     def next(cls, next_url: str):
         res = HttpClient.get(next_url)
-        return res.json()
+        json_data = res.json()
+        logging.debug(f"next {next_url} got {res} {json_data}")
+        return json_data
 
     @classmethod
     def list(cls, url: str, params: Dict, include_api_key: bool = False):
         res = HttpClient.get(url, params, include_api_key)
-        return res.json()
+        json_data = res.json()
+        logging.debug(f"list {url} got {res} {json_data}")
+        return json_data
 
     @classmethod
     def list_all(

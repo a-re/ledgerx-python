@@ -1,10 +1,11 @@
 from ledgerx.http_client import HttpClient
 from typing import List, Dict
 from ledgerx.util import gen_url
+from ledgerx import DEFAULT_LIMIT
 
 
 class Transactions:
-    default_list_params = dict()
+    default_list_params = dict(limit=DEFAULT_LIMIT)
 
     @classmethod
     def list(cls, params: Dict = {}) -> List[Dict]:
