@@ -56,12 +56,9 @@ class WebSocket:
         logging.info(f"listening to websocket: {self.connection}")
         async with self.connection as websocket:
             logging.info(f"...{websocket}")
-            #await asyncio.wait_for(self.consumer_handle(websocket), timeout=5)
             await self.consumer_handle(websocket)
         logging.info(f"stopped listening to websocket: {self.connection}")
 
-    def listen_loop(self):
-        asyncio.run_until_complete(self.listen())
     
     async def send(self, message: str) -> None:
         logging.info(f"Sending: {message}")
