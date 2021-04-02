@@ -6,11 +6,11 @@ from ledgerx import DEFAULT_LIMIT
 
 
 class Positions:
-    default_positions_params = dict()
-    default_trades_params = dict()
+    default_positions_params = dict(limit=DEFAULT_LIMIT)
+    default_trades_params = dict(limit=DEFAULT_LIMIT)
 
     @classmethod
-    def list(cls, params: Dict = dict(limit=DEFAULT_LIMIT)) -> List[Dict]:
+    def list(cls, params: Dict = dict()) -> List[Dict]:
         """Returns all your positions.
 
         https://docs.ledgerx.com/reference#listpositions
@@ -28,7 +28,7 @@ class Positions:
         return res.json()
 
     @classmethod
-    def list_trades(cls, position_id: int, params: Dict = dict(limit=DEFAULT_LIMIT)) -> Dict:
+    def list_trades(cls, position_id: int, params: Dict = dict()) -> Dict:
         """Returns a list of your trades for a given position.
 
         Args:
@@ -45,15 +45,15 @@ class Positions:
 
     ### helper methods specific to this API client
 
-    @classmethod  # FIXME pagination is broken for positions
-    def list_all(cls, params: Dict = dict(limit=DEFAULT_LIMIT*100)) -> List[Dict]:
+    @classmethod
+    def list_all(cls, params: Dict = dict()) -> List[Dict]:
         include_api_key = True
         url = gen_url("/trading/positions")
         qps = {**cls.default_positions_params, **params}
         return GenericResource.list_all(url, qps, include_api_key)
 
-    @classmethod  # FIXME pagination is broken for positions
-    def list_all_trades(cls, position_id: int, params: Dict = dict(limit=DEFAULT_LIMIT*100)) -> Dict:
+    @classmethod
+    def list_all_trades(cls, position_id: int, params: Dict = dict()) -> Dict:
         include_api_key = True
         url = gen_url(f"/trading/positions/{position_id}/trades")
         qps = {**cls.default_trades_params, **params}

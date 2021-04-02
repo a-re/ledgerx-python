@@ -9,7 +9,7 @@ class Trades:
     default_list_params = dict(
         status_type=201, limit=DEFAULT_LIMIT, min_size=1, mine=False, asset="CBTC"
     )
-    default_list_all_params = dict(limit=DEFAULT_LIMIT*100)
+    default_list_all_params = dict(limit=DEFAULT_LIMIT)
 
     @classmethod
     def list(cls, params: Dict = {}) -> List[Dict]:
