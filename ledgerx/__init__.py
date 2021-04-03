@@ -19,5 +19,6 @@ from ledgerx.contracts import Contracts
 from ledgerx.positions import Positions
 from ledgerx.transactions import Transactions
 from ledgerx.orders import Orders
+from ledgerx.book_states import BookStates
 from ledgerx.websocket import WebSocket
 from ledgerx.market_state import MarketState
