@@ -82,7 +82,7 @@ class WebSocket:
                 logging.warn("Detected a restart!")
             self.heartbeat = data
 
-    def update_by_type(self, data):
+    async def update_by_type(self, data):
         type = data['type']
         if type == 'book_top':
             self.update_book_top(data)
@@ -108,7 +108,10 @@ class WebSocket:
             logging.warn(f"Unknown type '{type}': {data}")
 
         for callback in self.update_callbacks:
-            callback(data)
+            if asyncio.iscoroutinefunction(callback):
+                await callback(data)
+            else:
+                callback(data)
 
     async def consumer_handle(self, websocket: websockets.client.WebSocketClientProtocol) -> None:
         logging.info(f"consumer_handle starting: {websocket}")
@@ -116,7 +119,7 @@ class WebSocket:
             logging.debug(f"Received: {message}")
             data = json.loads(message)
             if 'type' in data:
-                self.update_by_type(data)
+                await self.update_by_type(data)
             elif 'error' in data:
                 logging.warn(f"Got an error: {message}")
                 break
@@ -212,8 +215,9 @@ class WebSocket:
             try:
                 loop = asyncio.get_running_loop()
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    logging.info("Starting new WebSocket")
+                    
                     websocket = WebSocket()
+                    logging.info(f"Starting new WebSocket {websocket}")
                     for callback in callbacks:
                         websocket.register_callback(callback)
                     websocket.register_callback(websocket.localhost_socket_repeater_callback)
@@ -228,10 +232,11 @@ class WebSocket:
                     else:
                         await task1
 
-                    logging.info("Websocket exited.")
+                    logging.info(f"Websocket {websocket} exited for some reason.")
             except:
-                logging.exception(f"Got exception in websocket. Continuing after 5 seconds")
-                sleep(5)
+                logging.exception(f"Got exception in websocket")
+            logging.info("Continuing after 5 seconds")
+            sleep(5)
             logging.info('Continuing...')
 
     
