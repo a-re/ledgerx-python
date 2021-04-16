@@ -18,6 +18,7 @@ class MarketState:
     contract_positions = dict() # my positions by contract (no lots) dict(contract_id: position)
     accounts = dict()           # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
     exp_dates = list()
+    exp_strikes = dict()        # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
     orders = dict()             # all orders in the market dict{contract_id: dict{mid: order}}
     book_states = dict()        # all books in the market  dict{contract_id : dict{mid : book_state}}
     book_top = dict()           # all top books in the market dict{contract_id : top}
@@ -28,7 +29,7 @@ class MarketState:
     last_heartbeat = None
     mpid = None
     cid = None
-    next_day_contract_id = None
+    next_day_contracts = dict()
     skip_expired = True
 
     # Constants
@@ -48,6 +49,7 @@ class MarketState:
         self.contract_positions = dict()
         self.accounts = dict()
         self.exp_dates = list()
+        self.exp_strikes = dict()
         self.orders = dict()
         self.book_states = dict()
         self.book_top = dict()
@@ -55,7 +57,7 @@ class MarketState:
         self.label_to_contract_id = dict()
         self.put_call_map = dict()
         self.costs_to_close = dict()
-        self.next_day_contract_id = None
+        self.next_day_contracts = dict()
         self.skip_expired = True
         # keep any previous heartbeats, mpid and cid
 
@@ -182,8 +184,12 @@ class MarketState:
         if days <= 30:
             return False
         
-        if self.next_day_contract_id is not None and self.next_day_contract_id in self.book_top:
-            top = self.book_top[self.next_day_contract_id]
+        next_day_contract = self.get_next_day_swap(contract['underlying_asset'])
+        next_day_id = None
+        if next_day_contract is not None:
+            next_day_id = next_day_contract['id']
+        if next_day_id is not None and next_day_id in self.book_top:
+            top = self.book_top[next_day_id]
             bid = self.bid(top)
             ask = self.ask(top)
             fmv = bid
@@ -490,16 +496,18 @@ class MarketState:
             logging.debug(f"Removing order from books {self.book_states[contract_id][mid]}")
             del self.book_states[contract_id][mid]
 
-    def get_next_day_swap(self):
+    def get_next_day_swap(self, asset):
         next_day_contract = None
-        if self.next_day_contract_id is not None:
-            if self.next_day_contract_id not in self.all_contracts:
-                self.retrieve_contract(self.next_day_contract_id)
-            next_day_contract = self.all_contracts[self.next_day_contract_id]
+        if asset not in self.next_day_contracts:
+            for contract_id, contract in self.all_contracts.items():
+                if contract['is_next_day'] and asset == contract['underlying_asset'] and not self.contract_is_expired(contract):
+                    self.next_day_contracts[asset] = contract
+                    break
+        if asset in self.next_day_contracts:
+            next_day_contract = self.next_day_contracts[asset]
             if self.contract_is_expired(next_day_contract):
-                self.next_day_contract_id = None
                 next_day_contract = None
-        if self.next_day_contract_id is None:
+        if next_day_contract is None:
             # get the newest one
             logging.info("Discovering the latest Next-Day swap contract")
             contracts = ledgerx.Contracts.list_all()
@@ -507,9 +515,10 @@ class MarketState:
                 contract_id = c['id']
                 if contract_id not in self.all_contracts:
                     self.add_contract(c)
-                if 'Next-Day' in contract['label'] and c['active'] and not self.contract_is_expired(c):
-                    self.next_day_contract_id = contract_id
-                    next_day_contract = c
+                if c['is_next_day'] and 'Next-Day' in contract['label'] and c['active'] and not self.contract_is_expired(c):
+                    self.next_day_contracts[c['underlying_asset']] = c
+                    if asset == c['underlying_asset']:
+                        next_day_contract = c
         return next_day_contract
 
 
@@ -531,20 +540,24 @@ class MarketState:
             logging.info(f"contract is expired {contract}")
             if self.skip_expired:
                 return
-        if 'Next-Day' in label:
-            if self.next_day_contract_id is None or not self.contract_is_expired(contract) and contract['active']:
-                if self.next_day_contract_id is not None:
-                    current = self.all_contracts[self.next_day_contract_id]
+        asset = contract['underlying_asset']
+        test_label = self.to_contract_label(asset, contract['date_expires'], contract['derivative_type'], contract['is_call'], contract['strike_price'])
+        if label != test_label:
+            logging.warn(f"different labels '{label}' vs calculated '{test_label}' for {contract}")
+        if contract['is_next_day'] and 'Next-Day' in label:
+            if asset not in self.next_day_contracts or not self.contract_is_expired(contract) and contract['active']:
+                if asset in self.next_day_contracts:
+                    current = self.next_day_contracts[asset]
                     if current['date_expires'] < contract['date_expires']:
-                        self.next_day_contract_id = contract_id
-                        logging.info(f"new Next-Day swap {contract_id} {label}")
+                        self.next_day_contracts[asset] = contract
+                        logging.info(f"new Next-Day swap on {asset} {contract_id} {label}")
                     else:
-                        logging.info(f"ignoring old Next-Day swap {label}")
+                        logging.info(f"ignoring old Next-Day swap on {asset} {label}")
                 else:
-                    self.next_day_contract_id = contract_id
-                    logging.info(f"new Next-Day swap {contract_id} {label}")
+                    self.next_day_contracts[asset] = contract
+                    logging.info(f"new Next-Day swap on {asset} {contract_id} {label}")
             else:
-                logging.info(f"See old Next-Day swap {contract_id} {label}")
+                logging.info(f"See old Next-Day swap on {asset} {contract_id} {label}")
         if 'Put' in label:
             call_label = label.replace("Put", "Call")
             if call_label in self.label_to_contract_id:
@@ -552,13 +565,47 @@ class MarketState:
                 self.put_call_map[contract_id] = call_id
                 self.put_call_map[call_id] = contract_id
                 logging.info(f"mapped Put {contract_id} {label} <=> Call {call_id} {call_label}")
+            self.add_exp_strike(contract)
         elif 'Call' in label:
             put_label = label.replace("Call", "Put")
             if put_label in self.label_to_contract_id:
                 put_id = self.label_to_contract_id[put_label]
                 self.put_call_map[contract_id] = put_id
                 self.put_call_map[put_id] = contract_id
-                logging.info(f"mapped Call {contract_id} {label} <=> Put {put_id} {put_label}")       
+                logging.info(f"mapped Call {contract_id} {label} <=> Put {put_id} {put_label}")
+            self.add_exp_strike(contract)   
+
+    def add_exp_strike(self, contract):
+        exp = contract['date_expires']
+        assert(exp in self.exp_dates)
+        if exp not in self.exp_strikes:
+            self.exp_strikes[exp] = dict()
+        exp_asset_strikes = self.exp_strikes[exp]
+        asset = contract['underlying_asset']
+        if asset not in exp_asset_strikes:
+            exp_asset_strikes[asset] = []
+        exp_strikes = exp_asset_strikes[asset]
+        strike = contract['strike_price']
+        if strike not in exp_strikes:
+            exp_strikes.append(strike)
+            exp_strikes.sort()
+
+    def to_contract_label(self, _asset, _exp, derivative_type, is_call = False, strike = None):
+        exp = _exp.split(' ')[0] # trim off timezone
+        asset = _asset
+        if asset == "CBTC":
+            asset = "BTC Mini"
+        if derivative_type == 'future_contract':
+            return f"{exp} Future {asset}"
+        elif derivative_type == 'options_contract':
+            if is_call:
+                return f"{asset} {exp} Call ${strike//100:,}"
+            else:
+                return f"{asset} {exp} Put ${strike//100:,}"
+        elif derivative_type == 'day_ahead_swap':
+            return f"{exp} Next-Day {asset}"
+        else:
+            logging.warn(f"dunno derivative type {derivative_type}")
 
     def contract_added_action(self, action):
         assert(action['type'] == 'contract_added')
@@ -683,7 +730,7 @@ class MarketState:
             logging.warn(f"Processed old heartbeat {delay} seconds old {action}")
             # do not perform any more work
             return
-        await self.load_remaining_books(1)
+        await self.load_remaining_books(2)
 
     async def action_report_action(self, action):
         logging.debug(f"ActionReport {action}")
@@ -776,6 +823,7 @@ class MarketState:
     def update_basis(self, contract_id, position):
         if 'id' not in position or 'contract' not in position:
             logging.warn(f"Cannot update basis with an improper position {position}")
+            self.to_update_basis[contract_id] = position
             return
         contract = position['contract']
         if contract_id != contract['id']:
@@ -984,7 +1032,10 @@ class MarketState:
         updated = []
         for contract_id,pos in self.to_update_basis.items():
             logging.info(f"requested update basis on {contract_id} {pos}")
-            await self.async_update_basis(contract_id, pos)
+            if 'id' in pos and 'contract' in pos:
+                await self.async_update_basis(contract_id, pos)
+            else:
+                self.update_position(contract_id)
             updated.append(contract_id)
             count = count + 1
             if max > 0 and count >= max:
