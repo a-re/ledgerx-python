@@ -11,27 +11,6 @@ from ledgerx.util import unique_values_from_key
 
 class MarketState:
 
-    # state of market and positions
-    all_contracts = dict()
-    traded_contract_ids = dict()
-    expired_contracts = dict()
-    contract_positions = dict() # my positions by contract (no lots) dict(contract_id: position)
-    accounts = dict()           # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
-    exp_dates = list()
-    exp_strikes = dict()        # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
-    orders = dict()             # all orders in the market dict{contract_id: dict{mid: order}}
-    book_states = dict()        # all books in the market  dict{contract_id : dict{mid : book_state}}
-    book_top = dict()           # all top books in the market dict{contract_id : top}
-    to_update_basis = dict()    # dict(contract_id: position)
-    label_to_contract_id = dict() # dict(contract['label']: contract_id)
-    put_call_map = dict()         # dict(contract_id: contract_id) put -> call and call -> put
-    costs_to_close = dict()       # dict(contract_id: dict(net, cost, basis, size, bid, ask, low, high))
-    last_heartbeat = None
-    mpid = None
-    cid = None
-    next_day_contracts = dict()
-    skip_expired = True
-
     # Constants
     risk_free = 0.005 # 0.5% risk free interest
     timezone = dt.timezone.utc
@@ -43,23 +22,25 @@ class MarketState:
         self.skip_expired = skip_expired
 
     def clear(self):
-        self.all_contracts = dict()
-        self.traded_contract_ids = dict()
-        self.expired_contracts = dict()
-        self.contract_positions = dict()
-        self.accounts = dict()
-        self.exp_dates = list()
-        self.exp_strikes = dict()
-        self.orders = dict()
-        self.book_states = dict()
-        self.book_top = dict()
-        self.to_update_basis = dict()
-        self.label_to_contract_id = dict()
-        self.put_call_map = dict()
-        self.costs_to_close = dict()
-        self.next_day_contracts = dict()
-        self.skip_expired = True
-        # keep any previous heartbeats, mpid and cid
+        self.all_contracts = dict()           # dict (contract_id: contract)
+        self.traded_contract_ids = dict()     # dict (contract_id: traded-contract)
+        self.expired_contracts = dict()       # dict (contract_id: expired-contract)
+        self.contract_positions = dict()      # my positions by contract (no lots) dict(contract_id: position)
+        self.accounts = dict()                # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
+        self.exp_dates = list()               # sorted list of all expiration dates in the market
+        self.exp_strikes = dict()             # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
+        self.orders = dict()                  # ALL orders in the market dict{contract_id: dict{mid: order}}
+        self.book_states = dict()             # all books in the market  dict{contract_id : dict{mid : book_state}}
+        self.book_top = dict()                # all top books in the market dict{contract_id : top}
+        self.to_update_basis = dict()         # the set of detected stale positions requiring updates dict(contract_id: position)
+        self.label_to_contract_id = dict()    # dict(contract['label']: contract_id)
+        self.put_call_map = dict()            # dict(contract_id: contract_id) put -> call and call -> put
+        self.costs_to_close = dict()          # dict(contract_id: dict(net, cost, basis, size, bid, ask, low, high))
+        self.next_day_contracts = dict()      # dict(asset: next_day_contract)
+        self.skip_expired = True              # if expired contracts should be ignored (for positions and cost-basis)
+        self.last_heartbeat = None            # the last heartbeat - to detect restarts and network issue
+        self.mpid = None                      # the trader id
+        self.cid = None                       # the customer/account id
 
     def mid(self, bid, ask):
         if bid is None and ask is None:
@@ -1029,20 +1010,18 @@ class MarketState:
 
     async def load_remaining_books(self, max = 2):
         count = 0
-        updated = []
-        for contract_id,pos in self.to_update_basis.items():
+        to_update = list(self.to_update_basis.items())
+        for contract_id,pos in to_update:
             logging.info(f"requested update basis on {contract_id} {pos}")
             if 'id' in pos and 'contract' in pos:
                 await self.async_update_basis(contract_id, pos)
             else:
                 self.update_position(contract_id)
-            updated.append(contract_id)
+            if contract_id in self.to_update_basis:
+                del self.to_update_basis[contract_id]
             count = count + 1
             if max > 0 and count >= max:
                     break
-        for contract_id in updated:
-            if contract_id in self.to_update_basis:
-                del self.to_update_basis[contract_id]
         if count > 0:
             logging.info(f"Updated {count} position basis")
         if max > 0 and count >= max:

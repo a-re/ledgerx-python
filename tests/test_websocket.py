@@ -10,7 +10,6 @@ def test_methods():
     assert "connect" in class_methods
     assert "listen" in class_methods
     assert "consumer_handle" in class_methods
-    assert "send" in class_methods
     assert "close" in class_methods
 
 
