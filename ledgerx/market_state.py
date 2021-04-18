@@ -572,7 +572,9 @@ class MarketState:
             exp_strikes.sort()
 
     def to_contract_label(self, _asset, _exp, derivative_type, is_call = False, strike = None):
-        exp = _exp.split(' ')[0] # trim off timezone
+        exp = _exp
+        if ' ' in exp:
+            exp = exp.split(' ')[0] # trim off timezone
         asset = _asset
         if asset == "CBTC":
             asset = "BTC Mini"
