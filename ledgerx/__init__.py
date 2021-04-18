@@ -16,4 +16,5 @@ from ledgerx.contracts import Contracts
 from ledgerx.positions import Positions
 from ledgerx.transactions import Transactions
 from ledgerx.orders import Orders
+from ledgerx.bitvol import Bitvol
 from ledgerx.websocket import WebSocket
