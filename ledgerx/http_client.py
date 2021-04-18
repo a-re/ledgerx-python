@@ -8,6 +8,7 @@ import logging
 
 class HttpClient:
     # TODO(weston) - handle rate limiting, https://docs.ledgerx.com/reference#rate-limits
+    RETRY_429_ERRORS = False
 
     @staticmethod
     def get(
@@ -29,7 +30,7 @@ class HttpClient:
         while True:
             res = requests.get(url, headers=headers, params=params)
             logging.debug(f"get {url} {res}")
-            if res.status_code == 429:
+            if HttpClient.RETRY_429_ERRORS and res.status_code == 429:
                 if delay == DELAY_SECONDS:
                     delay += 1
                 else:
