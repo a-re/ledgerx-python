@@ -11,7 +11,7 @@ from ledgerx.util import unique_values_from_key
 
 class MarketState:
 
-    # Constants
+    # Constant static variables
     risk_free = 0.005 # 0.5% risk free interest
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
@@ -74,13 +74,13 @@ class MarketState:
             return None
         
         top = self.book_top[contract_id]
-        bid = self.bid(top)
-        ask = self.ask(top)
+        bid = MarketState.bid(top)
+        ask = MarketState.ask(top)
         mid = self.mid(bid, ask)
         fee = None
         cost = None
         if mid is not None:
-            fee = self.fee(mid, size)
+            fee = MarketState.fee(mid, size)
             cost = (fee + mid * size) // 10000
         basis = None
         net = None
@@ -113,32 +113,32 @@ class MarketState:
         self.costs_to_close[contract_id] = ret
         return ret
 
-    @classmethod
-    def ask(cls, top_book):
+    @staticmethod
+    def ask(top_book):
         if 'ask' in top_book:
             ask = top_book['ask']
             if ask is not None and ask != 0:
                 return ask
         return None
 
-    @classmethod
-    def bid(cls, top_book):
+    @staticmethod
+    def bid(top_book):
         if 'bid' in top_book:
             bid = top_book['bid']
             if bid is not None and bid != 0:
                 return bid
         return None
 
-    @classmethod
-    def fee(cls, price, size, price_units = 100):
+    @staticmethod
+    def fee(price, size, price_units = 100):
         # $0.15 per contract or 20% of price whichever is less
         fee_per_contract = price // (5 * price_units) # 20%
         if fee_per_contract >= 15:
             fee_per_contract = 15
         return abs(size) * fee_per_contract
 
-    @classmethod
-    def is_same_option_date(cls, contract_a, contract_b):
+    @staticmethod
+    def is_same_option_date(contract_a, contract_b):
         return 'is_call' in contract_a and 'is_call' in contract_b and \
             contract_a['is_call'] == contract_b['is_call'] and \
             contract_a['date_expires'] == contract_b['date_expires'] and \
@@ -154,6 +154,29 @@ class MarketState:
         else:
             return contract['id'] in self.expired_contracts
 
+    def get_filtered_contracts(self, **kwargs):
+        """Returns a list of contracts filtered by any key-value in a contract"""
+        return_contracts = []
+        for contract_id, contract in self.all_contracts.items():
+            match = True
+            for key,val in kwargs.items():
+                if val is None:
+                    continue
+                if key not in contract or val != contract[key]:
+                    match = False
+                    break
+            if match:
+                return_contracts.append(contract)
+        return return_contracts
+
+    def get_all_strikes_like_contract(self, contract_id):
+        """Returns a list on the same expiration date, same asset, same type, but possibly different strike price"""
+        if contract_id not in self.all_contracts:
+            self.retrieve_contract(contract_id)
+        contract = self.all_contracts[contract_id]
+        l = self.get_filtered_contracts(date_expires=contract['date_expires'], underlying_asset=contract['underlying_asset'], derivative_type=contract['derivative_type'], is_call=contract['is_call'], is_next_day=contract['is_next_day'])
+        return l
+    
     def is_qualified_covered_call(self, contract_id):
         if contract_id not in self.all_contracts:
             self.retrieve_contract(contract_id)
@@ -171,8 +194,8 @@ class MarketState:
             next_day_id = next_day_contract['id']
         if next_day_id is not None and next_day_id in self.book_top:
             top = self.book_top[next_day_id]
-            bid = self.bid(top)
-            ask = self.ask(top)
+            bid = MarketState.bid(top)
+            ask = MarketState.ask(top)
             fmv = bid
             if ask is not None:
                 if bid is not None:
@@ -181,7 +204,7 @@ class MarketState:
                 # get all strikes for this call option
                 strikes = []
                 for test_id, test_contract in self.all_contracts.items():
-                    if self.is_same_option_date(contract, test_contract):
+                    if MarketState.is_same_option_date(contract, test_contract):
                         strikes.append(test_contract['strike_price'])
                 strikes.sort(reverse = True)
                 lowest_strike = strikes[0]
@@ -496,7 +519,7 @@ class MarketState:
                 contract_id = c['id']
                 if contract_id not in self.all_contracts:
                     self.add_contract(c)
-                if c['is_next_day'] and 'Next-Day' in contract['label'] and c['active'] and not self.contract_is_expired(c):
+                if c['is_next_day'] and 'Next-Day' in c['label'] and c['active'] and not self.contract_is_expired(c):
                     self.next_day_contracts[c['underlying_asset']] = c
                     if asset == c['underlying_asset']:
                         next_day_contract = c
@@ -989,9 +1012,9 @@ class MarketState:
                 top = self.book_top[contract_id]
                 if size > 0:
                     # sell at bid
-                    bid = self.bid(top)
+                    bid = MarketState.bid(top)
                     if bid is not None:
-                        fee = self.fee(bid,size)
+                        fee = MarketState.fee(bid,size)
                         sale = (size * bid - fee) // 10000
                         total_net_close += sale
                         logging.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//100} with basis ${basis//100}, net ${(sale - basis//100)//1}")
@@ -999,9 +1022,9 @@ class MarketState:
                         logging.info(f"No bid buyers for {size} of {label}")
                 elif size < 0:
                     # buy at ask
-                    ask = self.ask(top)
+                    ask = MarketState.ask(top)
                     if ask is not None:
-                        fee = self.fee(ask,size)
+                        fee = MarketState.fee(ask,size)
                         purchase = (size * ask + fee) // 10000
                         total_net_close += purchase
                         logging.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//100} with basis ${basis//100}, net ${(purchase - basis/100)//1}")
