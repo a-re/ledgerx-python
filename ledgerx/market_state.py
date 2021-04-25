@@ -115,7 +115,7 @@ class MarketState:
 
     @staticmethod
     def ask(top_book):
-        if 'ask' in top_book:
+        if top_book is not None and 'ask' in top_book:
             ask = top_book['ask']
             if ask is not None and ask != 0:
                 return ask
@@ -123,7 +123,7 @@ class MarketState:
 
     @staticmethod
     def bid(top_book):
-        if 'bid' in top_book:
+        if top_book is not None and 'bid' in top_book:
             bid = top_book['bid']
             if bid is not None and bid != 0:
                 return bid
@@ -145,14 +145,24 @@ class MarketState:
             contract_a['derivative_type'] == contract_b['derivative_type'] and \
             contract_a['underlying_asset'] == contract_b['underlying_asset']
 
-    def contract_is_expired(self, contract):
+    def contract_is_expired(self, contract, preemptive_seconds = 15):
         if 'date_expires' not in contract:
             logging.warn(f"invalid contract without expiration: {contract}")
         exp = dt.datetime.strptime(contract['date_expires'], self.strptime_format)
-        if (exp - dt.datetime.now(self.timezone)).total_seconds() < 10: # do not risk any last second trades...
+        if (exp - dt.datetime.now(self.timezone)).total_seconds() < preemptive_seconds: # do not risk any last second trades...
             return True
         else:
             return contract['id'] in self.expired_contracts
+
+    def contract_is_live(self, contract):
+        if 'date_live' not in contract:
+            logging.warn(f"invalid contract without date_live: {contract}")
+            return False
+        live = dt.datetime.strptime(contract['date_live'], self.strptime_format)
+        if (dt.datetime.now(self.timezone) - live).total_seconds() < 0:
+            return False
+        else:
+            return True
 
     def get_filtered_contracts(self, **kwargs):
         """Returns a list of contracts filtered by any key-value in a contract"""
@@ -504,12 +514,14 @@ class MarketState:
         next_day_contract = None
         if asset not in self.next_day_contracts:
             for contract_id, contract in self.all_contracts.items():
-                if contract['is_next_day'] and asset == contract['underlying_asset'] and not self.contract_is_expired(contract):
+                if contract['is_next_day'] and asset == contract['underlying_asset'] and not self.contract_is_expired(contract) and self.contract_is_live(contract):
                     self.next_day_contracts[asset] = contract
                     break
         if asset in self.next_day_contracts:
             next_day_contract = self.next_day_contracts[asset]
-            if self.contract_is_expired(next_day_contract):
+            if self.contract_is_expired(next_day_contract, 1):
+                next_day_contract = None
+            if next_day_contract is not None and not self.contract_is_live(next_day_contract):
                 next_day_contract = None
         if next_day_contract is None:
             # get the newest one
@@ -519,7 +531,7 @@ class MarketState:
                 contract_id = c['id']
                 if contract_id not in self.all_contracts:
                     self.add_contract(c)
-                if c['is_next_day'] and 'Next-Day' in c['label'] and c['active'] and not self.contract_is_expired(c):
+                if c['is_next_day'] and 'Next-Day' in c['label'] and c['active'] and not self.contract_is_expired(c) and self.contract_is_live(c):
                     self.next_day_contracts[c['underlying_asset']] = c
                     if asset == c['underlying_asset']:
                         next_day_contract = c
@@ -549,6 +561,7 @@ class MarketState:
         if label != test_label:
             logging.warn(f"different labels '{label}' vs calculated '{test_label}' for {contract}")
         if contract['is_next_day'] and 'Next-Day' in label:
+            logging.info(f"looking at Next-Day {contract}")
             if asset not in self.next_day_contracts or not self.contract_is_expired(contract) and contract['active']:
                 if asset in self.next_day_contracts:
                     current = self.next_day_contracts[asset]
@@ -561,7 +574,7 @@ class MarketState:
                     self.next_day_contracts[asset] = contract
                     logging.info(f"new Next-Day swap on {asset} {contract_id} {label}")
             else:
-                logging.info(f"See old Next-Day swap on {asset} {contract_id} {label}")
+                logging.info(f"already captured old Next-Day swap on {asset} {contract_id} {label}")
         if 'Put' in label:
             call_label = label.replace("Put", "Call")
             if call_label in self.label_to_contract_id:
@@ -615,7 +628,10 @@ class MarketState:
 
     def contract_added_action(self, action):
         assert(action['type'] == 'contract_added')
-        self.add_contract(action['data'])
+        contract_id = action['data']['id']
+        self.retrieve_contract(contract_id, True)
+        contract = self.all_contracts[contract_id]
+        assert(contract['derivative_type'] == action['data']['derivative_type'])
 
     def remove_contract(self, contract):
         # just flag it as expired
@@ -773,10 +789,10 @@ class MarketState:
         else:
             logging.warn(f"Unknown action type {type}: {action}")
 
-    def retrieve_contract(self, contract_id):
+    def retrieve_contract(self, contract_id, force = False):
         contract = ledgerx.Contracts.retrieve(contract_id)["data"]
         assert(contract["id"] == contract_id)
-        if contract_id not in self.all_contracts:
+        if force or contract_id not in self.all_contracts:
             logging.info(f"retrieve_contract: new contract {contract}")
             self.add_contract(contract)
         return contract  
@@ -1049,19 +1065,18 @@ class MarketState:
                     break
         if count > 0:
             logging.info(f"Updated {count} position basis")
-        if max > 0 and count >= max:
-            return
-        for contract_id, contract in self.all_contracts.items():
-            if self.contract_is_expired(contract):
-                continue
-            if contract_id not in self.book_states:
-                logging.info(f"Loading books for {contract_id}")
-                await self.async_load_books(contract_id)
-                count = count + 1
-                if max > 0 and count >= max:
-                    break
+        if max == 0 or count < max:
+            for contract_id, contract in self.all_contracts.items():
+                if self.contract_is_expired(contract):
+                    continue
+                if contract_id not in self.book_states:
+                    logging.info(f"Loading books for {contract_id}")
+                    await self.async_load_books(contract_id)
+                    count = count + 1
+                    if max > 0 and count >= max:
+                        break
         if count > 0:
-            logging.info(f"Done loading {count} positions and books")
+            logging.info(f"Done loading {count} of {len(to_update)} stale positions and books")
 
     def _run_websocket_server(self, callback, include_api_key, repeat_server_port):
         return ledgerx.WebSocket.run_server(callback, include_api_key=include_api_key, repeat_server_port=repeat_server_port)
