@@ -6,6 +6,7 @@ from ledgerx.http_client import HttpClient
 from ledgerx.util import has_next_url
 
 import logging
+import asyncio
 
 
 class GenericResource:
@@ -69,5 +70,67 @@ class GenericResource:
                 break
             sleep(delay)
             json_data = cls.next(json_data["meta"]["next"], params, include_api_key)
+            callback(json_data["data"])
+            fetches += 1
+
+    @classmethod
+    async def async_next(cls, next_url: str, params: Dict, include_api_key: bool = False):
+        logging.info(f"next_url: {next_url} {params}")
+        res = await HttpClient.async_get(next_url, params, include_api_key)
+        json_data = res.json()
+        logging.debug(f"next {next_url} got {res} {json_data}")
+        return json_data
+
+    @classmethod
+    async def async_list(cls, url: str, params: Dict, include_api_key: bool = False):
+        res = await HttpClient.async_get(url, params, include_api_key)
+        json_data = res.json()
+        logging.debug(f"list {url} got {res} {json_data}")
+        return json_data
+
+    @classmethod
+    async def async_list_all(
+        cls,
+        url: str,
+        params: Dict = {},
+        include_api_key: bool = False,
+        max_fetches: int = 0,
+        delay: float = -1,
+    ) -> List[Dict]:
+        elements = []
+        if delay < 0:
+            delay = cls.list_all_default_delay
+        json_data = await cls.async_list(url, params, include_api_key)
+        elements.extend(json_data["data"])
+        fetches = 1
+
+        while has_next_url(json_data):
+            if max_fetches > 0 and fetches >= max_fetches:
+                break
+            await asyncio.sleep(delay)
+            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key)
+            elements.extend(json_data["data"])
+            fetches += 1
+        return elements
+
+    @classmethod
+    async def async_list_all_incremental_return(
+        cls,
+        url: str,
+        params: Dict = {},
+        include_api_key: bool = False,
+        callback: Callable = None,
+        max_fetches: int = 0,
+        delay: float = DELAY_SECONDS,
+    ) -> None:
+        json_data = await cls.async_list(url, params, include_api_key=include_api_key)
+        callback(json_data["data"])
+        fetches = 1
+
+        while has_next_url(json_data):
+            if max_fetches > 0 and fetches >= max_fetches:
+                break
+            await asyncio.sleep(delay)
+            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key)
             callback(json_data["data"])
             fetches += 1

@@ -1,4 +1,5 @@
 import requests
+import asyncio
 from typing import Dict
 from time import sleep
 from ledgerx.util import gen_headers
@@ -12,7 +13,7 @@ class HttpClient:
 
     @staticmethod
     def get(
-        url: str, params: Dict = {}, include_api_key: bool = False
+        url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Excute http get request
 
@@ -30,7 +31,7 @@ class HttpClient:
         while True:
             res = requests.get(url, headers=headers, params=params)
             logging.debug(f"get {url} {res}")
-            if HttpClient.RETRY_429_ERRORS and res.status_code == 429:
+            if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
                     delay += 1
                 else:
@@ -82,4 +83,40 @@ class HttpClient:
         res = requests.delete(url, params=params, headers=headers)
         logging.debug(f"delete {url} {res}")
         res.raise_for_status()
+        return res
+
+    @staticmethod
+    async def async_get(
+        url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
+    ) -> requests.Response:
+        """Excute http get request
+
+        Args:
+            url (str): [description]
+            params (Dict, optional): [description]. Defaults to {}.
+            include_api_key (bool, optional): [description]. Defaults to False.
+
+        Returns:
+            requests.Response: [description]
+        """
+        delay = DELAY_SECONDS
+        headers = gen_headers(include_api_key)
+        res = None
+        loop = asyncio.get_event_loop()
+        while True:
+            logging.info(f"sending {url} with params={params} and headers={headers}")
+            res = await loop.run_in_executor(None, requests.get, url, dict(**params, headers=headers))
+            logging.info(f"got from {url} : {res}")
+            if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
+                if delay == DELAY_SECONDS:
+                    delay += 1
+                else:
+                    delay *= 2.0
+                if delay > 10:
+                    delay = 10
+                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                await asyncio.sleep(delay)
+            else:
+                res.raise_for_status()
+                break
         return res

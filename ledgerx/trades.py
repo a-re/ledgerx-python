@@ -78,3 +78,44 @@ class Trades:
     def next(cls, next_url: str):
         res = HttpClient.get(next_url)
         return res.json()
+
+    @classmethod
+    async def async_list_all(cls, params: Dict = {}) -> List[Dict]:
+        """Returns a list of all trades in the market.
+
+        https://docs.ledgerx.com/reference#globalstrade
+
+        Args:
+            params (Dict, optional): [description]. Defaults to {}.
+
+        Returns:
+            List[Dict]: [description]
+        """
+        include_api_key = False
+        url = gen_url("/trading/trades/global")
+        request_params = {**cls.default_list_all_params, **params}
+        return await GenericResource.async_list_all(url, request_params, include_api_key, 0, cls.default_trading_trades_global_delay)
+
+
+    @classmethod
+    async def async_list_all_incremental_return(cls, params: Dict = {}, callback: Callable = None):
+        # """List all trades and execute callback function after
+        # each HTTP request (ie, in between pagination breaks).
+
+        # This API request calls the Trades.list_all function.
+
+        # See Trades.list_all for more info.
+
+        # Args:
+        #     params (Dict, optional): [description]. Defaults to {}.
+        #     callback (Callable, optional): [description]. Defaults to None.
+
+        # Returns:
+        #     [type]: [description]
+        # """
+        include_api_key = False
+        url = gen_url("/trading/trades/global")
+        request_params = {**cls.default_list_params, **params}
+        return await GenericResource.async_list_all_incremental_return(
+            url, params, include_api_key, callback, 0, cls.default_trading_trades_global_delay
+        )
