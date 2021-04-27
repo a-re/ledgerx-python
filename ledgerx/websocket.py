@@ -6,6 +6,7 @@ import json
 from time import sleep
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Listener
+import datetime as dt
 
 from ledgerx.util import gen_websocket_url
 import ledgerx
@@ -88,22 +89,24 @@ class WebSocket:
             self.update_book_top(data)
         elif type == 'heartbeat':
             self.update_heartbeat(data)
-        elif type == 'unauth_success':
-            logging.info("Successful unauth connection")
-        elif type == 'auth_success':
-            logging.info("Successful auth connection")
+        elif type == 'action_report':
+            logging.debug(f"action report {data}")
         elif type == 'collateral_balance_update':
             logging.debug(f"Collateral balance {data}")
         elif type == 'open_positions_update':
             logging.debug(f"Open Positions {data}")
         elif type == 'exposure_reports':
             logging.debug(f"Exposure reports {data} ")
-        elif type == 'action_report':
-            logging.debug(f"action report {data}")
         elif type == 'contract_added':
             logging.debug(f"contract added {data}")
+        elif type == 'unauth_success':
+            logging.info("Successful unauth connection")
+        elif type == 'auth_success':
+            logging.info("Successful auth connection")            
         elif 'contact_' in type:
             logging.debug(f"contact change {data}")
+        elif type == 'websocket_starting':
+            logging.info(f"Websocket just started {data}")
         else:
             logging.warn(f"Unknown type '{type}': {data}")
 
@@ -211,7 +214,11 @@ class WebSocket:
             cls.include_api_key = kw_args['include_api_key']
         if 'repeat_server_port' not in kw_args:
             kw_args['repeat_server_port'] = None
+        
+        run_iteration = 0
         while True:
+            repeat_server = None
+            run_iteration += 1
             try:
                 loop = asyncio.get_running_loop()
                 with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -223,14 +230,18 @@ class WebSocket:
                     websocket.register_callback(websocket.localhost_socket_repeater_callback)
                     websocket.connect(cls.include_api_key)
 
+                    fut_notify = websocket.update_by_type(dict(type="websocket_starting",\
+                         data=dict(startup_time=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z"),\
+                             run_iteration=run_iteration)))
+
                     task1 = asyncio.create_task(websocket.listen())
         
                     if kw_args['repeat_server_port'] is not None:
-                        server = await asyncio.start_server(websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
-                        async with server:
-                            await asyncio.gather(task1, server.serve_forever())
+                        repeat_server = await asyncio.start_server(websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
+                        async with repeat_server:
+                            await asyncio.gather(fut_notify, task1, repeat_server.serve_forever())
                     else:
-                        await task1
+                        await asyncio.gather(fut_notify, task1)
 
                     logging.info(f"Websocket {websocket} exited for some reason.")
             except:

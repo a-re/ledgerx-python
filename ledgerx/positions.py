@@ -1,3 +1,4 @@
+import asyncio
 from typing import List, Dict
 from ledgerx.http_client import HttpClient
 from ledgerx.generic_resource import GenericResource
@@ -58,3 +59,17 @@ class Positions:
         url = gen_url(f"/trading/positions/{position_id}/trades")
         qps = {**cls.default_trades_params, **params}
         return GenericResource.list_all(url, qps, include_api_key)
+
+    @classmethod
+    async def async_list_all(cls, params: Dict = dict()) -> List[Dict]:
+        include_api_key = True
+        url = gen_url("/trading/positions")
+        qps = {**cls.default_positions_params, **params}
+        return await GenericResource.async_list_all(url, qps, include_api_key)
+
+    @classmethod
+    async def async_list_all_trades(cls, position_id: int, params: Dict = dict()) -> Dict:
+        include_api_key = True
+        url = gen_url(f"/trading/positions/{position_id}/trades")
+        qps = {**cls.default_trades_params, **params}
+        return await GenericResource.async_list_all(url, qps, include_api_key)

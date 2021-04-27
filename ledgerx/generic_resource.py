@@ -76,15 +76,16 @@ class GenericResource:
     @classmethod
     async def async_next(cls, next_url: str, params: Dict, include_api_key: bool = False):
         logging.info(f"next_url: {next_url} {params}")
-        res = await HttpClient.async_get(next_url, params, include_api_key)
-        json_data = res.json()
+        res = await HttpClient.async_get_json(next_url, params, include_api_key)
+        json_data = res
         logging.debug(f"next {next_url} got {res} {json_data}")
         return json_data
 
     @classmethod
     async def async_list(cls, url: str, params: Dict, include_api_key: bool = False):
-        res = await HttpClient.async_get(url, params, include_api_key)
-        json_data = res.json()
+        logging.info(f"calling async_get_json on {url} {params}")
+        res = await HttpClient.async_get_json(url, params, include_api_key)
+        json_data = res
         logging.debug(f"list {url} got {res} {json_data}")
         return json_data
 
@@ -100,7 +101,9 @@ class GenericResource:
         elements = []
         if delay < 0:
             delay = cls.list_all_default_delay
-        json_data = await cls.async_list(url, params, include_api_key)
+        logging.info(f"calling async_list {url} {params}")
+        json_data = await cls.async_list(url, params, include_api_key=include_api_key)
+        logging.debug(f"Got for {url} : json_data={json_data}")
         elements.extend(json_data["data"])
         fetches = 1
 
@@ -108,7 +111,9 @@ class GenericResource:
             if max_fetches > 0 and fetches >= max_fetches:
                 break
             await asyncio.sleep(delay)
-            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key)
+            logging.info(f"calling async_next {url} {params}")
+            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key=include_api_key)
+            logging.debug(f"Got for {url} : json_data={json_data}")
             elements.extend(json_data["data"])
             fetches += 1
         return elements
@@ -123,7 +128,9 @@ class GenericResource:
         max_fetches: int = 0,
         delay: float = DELAY_SECONDS,
     ) -> None:
+        logging.info(f"calling async_list {url} {params}")
         json_data = await cls.async_list(url, params, include_api_key=include_api_key)
+        logging.debug(f"Got for {url} : json_data={json_data}")
         callback(json_data["data"])
         fetches = 1
 
@@ -131,6 +138,8 @@ class GenericResource:
             if max_fetches > 0 and fetches >= max_fetches:
                 break
             await asyncio.sleep(delay)
-            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key)
+            logging.info(f"calling async_next {url} {params}")
+            json_data = await cls.async_next(json_data["meta"]["next"], params, include_api_key=include_api_key)
+            logging.debug(f"Got for {url} : json_data={json_data}")
             callback(json_data["data"])
             fetches += 1

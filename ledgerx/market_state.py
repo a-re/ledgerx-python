@@ -54,6 +54,27 @@ class MarketState:
         else:
             return ask
     
+    def get_book_top(self, contract_id, blocking = False):
+        if contract_id is None:
+            logging.info("No books for None!")
+            return None
+        if contract_id in self.expired_contracts:
+            logging.debug(f"Not looking for expired books on {contract_id}")
+            return None
+        if contract_id not in self.book_top:
+            logging.info(f"Need books for {contract_id}")
+            if blocking:
+                # load books now
+                self.load_books(contract_id)
+            else:
+                if contract_id in self.book_states:
+                    del self.book_states[contract_id] # signal to load books in next heartbeat
+                return None
+        if contract_id not in self.book_top:
+            logging.warning(f"No books for {contract_id}")
+            return None
+        return self.book_top[contract_id]
+    
     def cost_to_close(self, contract_id):
         "returns dict(low, high, net, basis, cost, ask, bid, size)"
         logging.debug(f"getting cost to close for {contract_id}")
@@ -67,14 +88,10 @@ class MarketState:
         size = position['size']
         if size == 0:
             return None
-        if contract_id not in self.book_top:
-            logging.info(f"Need books for {contract_id}")
-            self.load_books(contract_id)
-        if contract_id not in self.book_top:
-            logging.warning(f"There are no books for {contract_id} {contract}")
-            return None
         
-        top = self.book_top[contract_id]
+        top = self.get_book_top(contract_id, True)
+        if top is None:
+            return None
         bid = MarketState.bid(top)
         ask = MarketState.ask(top)
         mid = self.mid(bid, ask)
@@ -203,8 +220,8 @@ class MarketState:
         next_day_id = None
         if next_day_contract is not None:
             next_day_id = next_day_contract['id']
-        if next_day_id is not None and next_day_id in self.book_top:
-            top = self.book_top[next_day_id]
+        top = self.get_book_top(next_day_id)
+        if top is not None:
             bid = MarketState.bid(top)
             ask = MarketState.ask(top)
             fmv = bid
@@ -443,7 +460,7 @@ class MarketState:
         contract_id = book_states['contract_id']
         if contract_id not in self.all_contracts:
             self.retrieve_contract(contract_id)
-        logging.info(f"Loading all books for {contract_id}: {self.all_contracts[contract_id]['label']}")
+        logging.info(f"Replacing all books for {contract_id}: {self.all_contracts[contract_id]['label']} with {len(book_states['book_states'])} entries")
         # replace any existing states
         self.book_states[contract_id] = dict()
         for state in book_states['book_states']:
@@ -494,16 +511,49 @@ class MarketState:
             logging.info(f"top book states are missing {top_bid_book_state} {top_ask_book_state}")
         return (top_bid_book_state, top_ask_book_state)
         
+    
+        logging.info(f"Loading books for {contract_id}")
+        if contract_id not in self.all_contracts:
+            self.retrieve_contract(contract_id)
+        contract = self.all_contracts[contract_id]
+        if self.contract_is_expired(contract):
+            logging.info(f"Skiping book loading on expired contract {contract}")
+            return
 
+        try:
+            book_states = ledgerx.BookStates.get_book_states(contract_id)
+            self.handle_all_book_states(book_states)
+            logging.info(f"Added {len(book_states['book_states'])} open orders for {contract_id}")
+        except:
+            logging.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
+ 
     async def async_load_books(self, contract_id):
         logging.info(f"async loading books for {contract_id}")
-        self.load_books(contract_id)
+        if contract_id not in self.all_contracts:
+            await self.retrieve_contract(contract_id)
+        contract = self.all_contracts[contract_id]
+        if self.contract_is_expired(contract):
+            logging.info(f"Skiping book loading on expired contract {contract}")
+            return
 
-    async def async_load_all_books(self, contracts):
+        try:
+            book_states = await ledgerx.BookStates.async_get_book_states(contract_id)
+            self.handle_all_book_states(book_states)
+            logging.info(f"Added {len(book_states['book_states'])} open orders for {contract_id}")
+        except:
+            logging.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
+ 
+    async def async_load_all_books(self, contracts, max_parallel = 10):
         logging.info(f"Loading books for {contracts}")
+        futures = []
         for contract_id in contracts:
-            await self.async_load_books(contract_id)
-
+            logging.info(f"loading books for {contract_id}")
+            fut = self.async_load_books(contract_id)
+            futures.append( fut )
+            await MarketState.await_futures(futures, max_parallel)
+        await MarketState.await_futures(futures)
+        logging.info(f"Done loading all books")
+    
     def delete_book_state(self, contract_id, mid):
         if contract_id not in self.book_states:
             # do not bother loading the book states
@@ -653,7 +703,7 @@ class MarketState:
         logging.info("Busted trade {action}")
         # TODO 
 
-    def open_positions_action(self, action):
+    async def open_positions_action(self, action):
         logging.info(f"Positions {action}")
         assert(action['type'] == 'open_positions_update')
         assert('positions' in action)
@@ -680,14 +730,18 @@ class MarketState:
                 if contract_id not in self.contract_positions:
                     needs_all = True
                 else:
-                    self.update_position(contract_id)
+                    await self.async_update_position(contract_id)
             if needs_all:
                 self.update_all_positions()
                 
         if len(update_basis) > 0:
             logging.info(f"Getting updated basis for these contracts {update_basis}")
+            futures = []
             for contract_id in update_basis:
-                self.update_position(contract_id)
+                future = self.async_update_position(contract_id)
+                futures.append(future)
+                MarketState.await_futures(futures, 10)
+            MarketState.await_futures(futures)
 
     def collateral_balance_action(self, action):
         logging.info(f"Collateral {action}")
@@ -709,7 +763,7 @@ class MarketState:
             return False
         if contract_id not in self.all_contracts:
             logging.info(f"loading contract for book_top {contract_id} {action}")
-            self.retrieve_contract(contract_id)
+            await self.retrieve_contract(contract_id)
             await self.async_load_books(contract_id)
             logging.info(f"ignoring possible stale book top {action}")
             return False
@@ -776,9 +830,13 @@ class MarketState:
         elif type == 'collateral_balance_update':
             self.collateral_balance_action(action)
         elif type == 'open_positions_update':
-            self.open_positions_action(action)
+            await self.open_positions_action(action)
         elif type == 'exposure_reports':
             logging.info(f"Exposure report {action}")
+        elif type == 'websocket_starting':
+            logging.info(f"Websocket has started {action}, books may be stale and need to be resynced")
+            self.book_top.clear()
+            self.book_states.clear()
         elif type == 'contract_added':
             self.contract_added_action(action)
         elif type == 'contract_removed':
@@ -800,6 +858,14 @@ class MarketState:
             self.add_contract(contract)
         return contract  
 
+    async def async_retrieve_contract(self, contract_id, force = False):
+        contract = await ledgerx.Contracts.async_retrieve(contract_id)["data"]
+        assert(contract["id"] == contract_id)
+        if force or contract_id not in self.all_contracts:
+            logging.info(f"retrieve_contract: new contract {contract}")
+            self.add_contract(contract)
+        return contract  
+
     def set_traded_contracts(self):
         # get the list of my traded contracts
         # this may include inactive / expired contracts
@@ -809,6 +875,10 @@ class MarketState:
         for traded in traded_contracts:
             logging.debug(f"traded {traded}")
             contract_id = traded['id']
+            if self.skip_expired:
+                if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
+                    skipped += 1
+                    continue
             if contract_id not in self.all_contracts:            
                 # look it up
                 contract = self.retrieve_contract(contract_id)
@@ -816,6 +886,7 @@ class MarketState:
             self.traded_contract_ids[contract_id] = self.all_contracts[contract_id]
             contract_label = self.all_contracts[contract_id]["label"]
             logging.debug(f"Traded {contract_id} {contract_label}")
+        logging.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")
         
     def add_transaction(self, transaction):
         logging.debug(f"transaction {transaction}")
@@ -842,8 +913,25 @@ class MarketState:
             assert(transaction['amount'] == transaction['credit_post_balance'] - transaction['credit_pre_balance'])
 
     
+
     async def async_update_basis(self, contract_id, position):
-        self.update_basis(contract_id, position)
+        if 'id' not in position or 'contract' not in position:
+            logging.warning(f"Cannot update basis with an improper position {position}")
+            self.to_update_basis[contract_id] = position
+            return
+        contract = position['contract']
+        if contract_id != contract['id']:
+            logging.warning(f"Improper match of {contract_id} to {position}")
+            return
+
+        if self.skip_expired and self.contract_is_expired(contract):
+            logging.info(f"skipping basis update for expired contract {contract['label']}")
+            return
+
+        pos_id = position["id"]
+        logging.info(f"updating position with trades and basis for {contract_id} {position}")
+        trades = await ledgerx.Positions.async_list_all_trades(pos_id)
+        self.process_basis_trades(contract, position, trades)
 
     def update_basis(self, contract_id, position):
         if 'id' not in position or 'contract' not in position:
@@ -862,6 +950,10 @@ class MarketState:
         pos_id = position["id"]
         logging.info(f"updating position with trades and basis for {contract_id} {position}")
         trades = ledgerx.Positions.list_all_trades(pos_id)
+        self.process_basis_trades(contract, position, trades)
+
+    def process_basis_trades(self, contract, position, trades):
+        contract_id = contract['id']
         contract_label = contract['label']
         logging.info(f"got {len(trades)} trades for {contract_id} {contract_label}")
         pos = 0
@@ -897,9 +989,17 @@ class MarketState:
         logging.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC ${cost} -- {contract_id} {contract_label}")
         
 
+    async def async_update_all_positions(self):
+        logging.info(f"Updating all positions")
+        all_positions = await ledgerx.Positions.async_list_all()
+        self.process_all_positions(all_positions)
+
     def update_all_positions(self):
         logging.info(f"Updating all positions")
         all_positions = ledgerx.Positions.list_all()
+        self.process_all_positions(all_positions)
+
+    def process_all_positions(self, all_positions):
         for pos in all_positions:
             assert('id' in pos and 'contract' in pos)
             contract = pos['contract']
@@ -911,15 +1011,24 @@ class MarketState:
                     pos['basis'] = old_pos['basis']
             self.contract_positions[contract_id] = pos
             if 'basis' not in pos:
+                if self.skip_expired:
+                    if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
+                        continue
                 logging.info(f"position for {contract_id} {contract['label']} is missing basis or changed {pos}")
                 self.to_update_basis[contract_id] = pos
 
     async def async_update_position(self, contract_id, position = None):
-        self.update_position(contract_id, position)
+        if position is None or 'id' not in position:
+            await self.async_update_all_positions()
+            position = self.contract_positions[contract_id]
+        self.update_position(contract_id, position, False)
+        await self.async_update_basis(contract_id, position)
 
-    def update_position(self, contract_id, position = None):
+    def update_position(self, contract_id, position = None, update_basis_too = True):
         logging.info(f"updating position for {contract_id}")
         if contract_id not in self.all_contracts:
+            if self.skip_expired and contract_id in self.expired_contracts:
+                return
             self.retrieve_contract(contract_id)
         if position is None and contract_id in self.contract_positions:
             position = self.contract_positions[contract_id]
@@ -934,7 +1043,8 @@ class MarketState:
             logging.warning(f"Could not find a postiion for {contract_id}")
             return
         
-        self.update_basis(contract_id, position)
+        if update_basis_too:
+            self.update_basis(contract_id, position)
         
     def load_market(self):
         
@@ -977,19 +1087,34 @@ class MarketState:
         logging.info(f"Loaded {len(transactions)} transactions")
         logging.info(f"Accounts: {self.accounts}")
         
+    @staticmethod
+    async def await_futures(futures, max_pending = 0):
+        while len(futures) > max_pending:
+            await futures.pop(0)
            
     async def load_positions_orders_and_books(self):
 
         # TODO is this still needed? --- await self.load_all_transactions()
 
         # get the positions for the my traded contracts
-        skipped = 0
-        self.update_all_positions()
+        #expired_contracts = await ledgerx.Contracts.async_list_all(dict(active = 'False'))
+        #logging.info(f"Got {len(expired_contracts)} Expired contracts")
+        #for contract in expired_contracts:
+        #    self.add_contract(contract)
+        #    self.expired_contracts[contract['id']] = contract
+
+        await self.async_update_all_positions()
 
         # get all the trades for each of my positions
         # and calculate basis & validate the balances
+        futures = []
         for contract_id, position in self.contract_positions.items():
-            await self.async_update_position(contract_id, position)
+            if self.skip_expired and contract_id not in self.all_contracts:
+                continue
+            future = self.async_update_position(contract_id, position)
+            futures.append(future)
+            await MarketState.await_futures(futures, 10)
+        await MarketState.await_futures(futures)
                         
         if not self.skip_expired:
             # zero out expired positions -- they no longer exist
@@ -1005,6 +1130,8 @@ class MarketState:
         open_contracts.sort()
         logging.info(f"Have the following {len(open_contracts)} Open Positions")
         for contract_id in open_contracts:
+            if self.skip_expired and contract_id not in self.all_contracts:
+                continue
             contract = self.all_contracts[contract_id]
             label = contract['label']
             position = self.contract_positions[contract_id]
@@ -1021,14 +1148,16 @@ class MarketState:
         total_net_close = 0
         total_net_basis = 0
         for contract_id, position in self.contract_positions.items():
+            if self.skip_expired and contract_id not in self.all_contracts:
+                continue
             label = self.all_contracts[contract_id]['label']
             basis = None
             size = position['size']
             if 'basis' in position:
                 basis = position['basis']
                 total_net_basis += basis
-            if contract_id in self.book_top:
-                top = self.book_top[contract_id]
+            top = self.get_book_top(contract_id)
+            if top is not None:
                 if size > 0:
                     # sell at bid
                     bid = MarketState.bid(top)
@@ -1089,7 +1218,7 @@ class MarketState:
             self.last_trade[contract_id] = trade
         logging.info(f"last trade is now {id(self.last_trade)} with {len(self.last_trade)}")
 
-    async def load_latest_trades(self, past_minutes = 60):
+    async def load_latest_trades(self, past_minutes = 60*5):
         before_date = dt.datetime.now(self.timezone)
         after_date = before_date - dt.timedelta(minutes=past_minutes)
         before_date = before_date.strftime('%Y-%m-%dT%H:%M')
@@ -1106,7 +1235,7 @@ class MarketState:
             if 'id' in pos and 'contract' in pos:
                 await self.async_update_basis(contract_id, pos)
             else:
-                self.update_position(contract_id)
+                await self.async_update_position(contract_id)
             if contract_id in self.to_update_basis:
                 del self.to_update_basis[contract_id]
             count = count + 1
