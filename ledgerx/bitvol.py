@@ -76,8 +76,12 @@ class BitvolCache:
                 bitvol = None
         if bitvol is None:
             bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
-            logging.info(f"bitvol list({asset}, {resolution}) returned {bitvol_results}")
-            bitvol = bitvol_results['data'][-1]
-            cls.cache[key] = bitvol
+            logging.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={bitvol_results['data']}")
+            for result in bitvol_results['data']:
+                # test the result, sometimes a value comes back as None
+                if result['value'] is not None and (bitvol is None or bitvol['time'] < result['time']):
+                    bitvol = result
+                    cls.cache[key] = bitvol
         return bitvol['value']
+        
 
