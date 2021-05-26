@@ -92,7 +92,7 @@ class HttpClient:
     async def async_get_json(cls,
         url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
-        """Excute http get request
+        """Execute http get request
 
         Args:
             url (str): [description]
@@ -103,13 +103,15 @@ class HttpClient:
             requests.Response: [description]
         """
         # bootstrap the session
+        loop = asyncio.get_event_loop()
         if cls.aiohttp_session is None:
-            cls.aiohttp_session = aiohttp.ClientSession()
+            logging.info(f"new aiohttp.ClientSession")
+            cls.aiohttp_session = aiohttp.ClientSession(loop=loop)
         
         delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
         res = None
-        loop = asyncio.get_event_loop()
+        
         while True:
             logging.info(f"getting {url} {'Authorization' in headers} {params}")
             #res = await loop.run_in_executor(None, requests.get, url, dict(**params, headers=headers))
