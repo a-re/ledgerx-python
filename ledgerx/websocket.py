@@ -55,10 +55,10 @@ class WebSocket:
         self.include_api_key = include_api_key
         logging.debug(f"Connecting to {websocket_resource_url}")
         self.connection = websockets.connect(websocket_resource_url)
-        logging.info(f"Connected {self.connection} include_api_key={include_api_key}")
+        logging.info(f"Connected connection={self.connection} include_api_key={include_api_key}")
 
     async def close(self):
-        logging.debug(f"Closing connection {self.connection}")
+        logging.info(f"Closing connection {self.connection}")
         async with self.connection as websocket:
             await websocket.close()
         self.connection = None
@@ -131,14 +131,17 @@ class WebSocket:
             if self.connection is None:
                 logging.info("Connection is gone")
                 break
-        logging.info(f"consumer_handle exited: {websocket}")
+        if self.connection is not None:
+            logging.error(f"consumer_handle exited: websocket={websocket} connection={self.connection}")
+            raise RuntimeError(f"websocket connection exited but it is not None {self.connection}")
 
     async def listen(self):
         logging.info(f"listening to websocket: {self.connection}")
         async with self.connection as websocket:
             logging.info(f"...{websocket}")
             await self.consumer_handle(websocket)
-        logging.info(f"stopped listening to websocket: {self.connection}")
+        logging.error(f"stopped listening to websocket: {self.connection}")
+        raise RuntimeError(f"websocket stopped listending {self.connection}")
 
             
     def localhost_socket_repeater_callback(self, message):
