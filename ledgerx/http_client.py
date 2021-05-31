@@ -89,7 +89,7 @@ class HttpClient:
 
     aiohttp_session = None
     @classmethod
-    async def async_get_json(cls,
+    async def async_get(cls,
         url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Execute http get request
@@ -130,6 +130,4 @@ class HttpClient:
             else:
                 res.raise_for_status()
                 break
-            
-        json = await res.json()
-        return json
+        return res

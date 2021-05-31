@@ -135,8 +135,9 @@ class Contracts:
         """
         include_api_key = True
         url = gen_url(f"/trading/contracts/{contract_id}")
-        res = await HttpClient.async_get_json(url, {}, include_api_key)
-        return res
+        res = await HttpClient.async_get(url, {}, include_api_key)
+        return await res.json()
+        
 
     @classmethod
     async def async_retrieve_position(cls, contract_id: int) -> Dict:
@@ -152,5 +153,5 @@ class Contracts:
         """
         include_api_key = True
         url = gen_url(f"/trading/contracts/{contract_id}/position")
-        res = await HttpClient.async_get_json(url, {}, include_api_key)
-        return res
+        res = await HttpClient.async_get(url, {}, include_api_key).json()
+        return await res.json()

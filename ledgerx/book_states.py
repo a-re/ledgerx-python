@@ -40,5 +40,6 @@ class BookStates:
         include_api_key = True
         url = gen_legacy_url(f"/book-states/{contract_id}")
         qps = dict(**cls.default_list_params)
-        res = await HttpClient.async_get_json(url, qps, include_api_key)
-        return res["data"]
+        res = await HttpClient.async_get(url, qps, include_api_key)
+        json = await res.json()
+        return json["data"]
