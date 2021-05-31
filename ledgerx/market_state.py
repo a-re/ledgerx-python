@@ -32,7 +32,11 @@ class MarketState:
         self.accounts = dict()                # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
         self.exp_dates = list()               # sorted list of all expiration dates in the market
         self.exp_strikes = dict()             # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
-        self.orders = dict()                  # ALL orders in the market dict{contract_id: dict{mid: order}}
+        self.my_orders = set()                # just the mids of my orders
+        self.contract_clock = dict()          # The last clock for a given contract
+                                              # An Action Report should only be applied if its Monotonic Clock is equal to current_clock + 1. 
+                                              # Old messages can safely be ignored.
+                                              # Gaps should refresh
         self.book_states = dict()             # all books in the market  dict{contract_id : dict{mid : book_state}}
         self.book_top = dict()                # all top books in the market dict{contract_id : top}
         if self.last_trade is None:
@@ -261,49 +265,112 @@ class MarketState:
     def is_my_order(self, order):
         return self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
 
-    def replace_existing_order(self, order):
-        # replace if clock is larger
+    def get_book_state(self, contract_id):
+        if contract_id not in self.book_states:
+            self.book_states[contract_id] = dict()
+        return self.book_states[contract_id]
+    
+    def insert_new_order(self, order):
+        logging.info(f"New order {order}")
         mid = order['mid']
         contract_id = order['contract_id']
-        assert(contract_id in self.orders and mid in self.orders[contract_id])
-        contract_orders = self.orders[contract_id]
-        existing = contract_orders[mid]
+        book_state = self.get_book_state(contract_id)
+        if mid in book_state:
+            book_order = book_state[mid]
+            if book_state[mid]['size'] == order['size']:
+                logging.info(f"Already captured book state for order book_order={book_order} order={order}")
+            else:
+                logging.warning(f"Different sizes from existing book_order={book_order} order={order}")
+        assert('status_type' in order and (order['status_type'] == 200 or order['status_type'] == 201 or order['status_type'] == 204))
+        label = self.all_contracts[contract_id]['label']
+        book_order = dict(contract_id=contract_id, price=order['price'], size=order['size'], is_ask=order['is_ask'], clock=order['clock'], mid=mid)
+        if 'mpid' in order:
+            book_order['mpid'] = order['mpid']
+        if order['status_type'] == 200 or order['status_type'] == 204:
+            assert(book_order['size'] == order['inserted_size'] and book_order['price'] == order['inserted_price'])
+        elif order['status_type'] == 201:
+            if order['inserted_size'] != 0:
+                book_order['price'] = order['inserted_price']
+                book_order['size'] = order['inserted_size']
+                logging.info(f"Replaced order size and price with inserted values")
+            else:
+                book_order['price'] = order['original_price']
+                book_order['size'] = order['original_size']
+                logging.info(f"Replaced order size and price with original values")
+        if self.is_my_order(order):
+            assert(mid not in book_state)
+            logging.info(f"Inserted my new order on {label} book {book_order} from order {order}")
+        else:
+            logging.debug(f"Inserted this 3rd party order on {label} book {book_order} from order {order}")
+        book_state[mid] = book_order
+
+    def remove_order(self, order):
+        logging.info(f"removing order {order}")
+        assert('mid' in order and 'contract_id' in order)
+        mid = order['mid']
+        contract_id = order['contract_id']
+        book_state = self.get_book_state(contract_id)
+        if mid in book_state:
+            del book_state[mid]
+        if mid in self.my_orders:
+            self.my_orders.remove(mid)
+        if 'clock' in order:
+            book_state['last_delete_clock'] = dict(clock=order['clock'])
+
+    def replace_existing_order(self, order):
+        # replace if clock is larger
+        # check book_states if this is a trade and subtract filled_size
+        # remove order if books_state is now 0
+        logging.info(f"replacing order {order}")
+        mid = order['mid']
+        contract_id = order['contract_id']
+        book_state = self.get_book_state(contract_id)
+        exists = mid in book_state
+        inserted = False
+        assert('status_type' in order and (order['status_type'] == 201 or order['status_type'] == 204))
+        if not exists:
+            logging.info(f"traded order has not been tracked yet! {order}") 
+            self.insert_new_order(order)
+            inserted = False
+        assert(mid in book_state)
+        # make a copy of the book order
+        book_order = dict(**book_state[mid])
         assert(order['contract_id'] in self.all_contracts)
         contract = self.all_contracts[contract_id]
         label = contract['label']
-        if existing['clock'] <= order['clock'] and existing['ticks'] < order['ticks']:
-            if self.is_my_order(existing) and not self.is_my_order(order):
-                logging.warning("Existing order is mine but replacement is not. existing {existing} order {order}, ignoring update")
-            else:
-                if order['size'] == 0:
-                    del contract_orders[mid]
-                    logging.debug(f"Deleted existing order of zero size {existing} to {order}")
-                else:
-                    contract_orders[mid] = order
-                    logging.debug(f"Replaced existing order on {label} {existing} to {order}")
-        else:
-            if existing['ticks'] == order['ticks']:
-                logging.debug(f"Got duplicate order on {label} {existing} vs {order}")
-            else:
-                logging.warning(f"existing order on {label} {existing} is newer {order}, ignoring update")
-    
-    def insert_new_order(self, order):
-        mid = order['mid']
-        contract_id = order['contract_id']
-        if contract_id not in self.orders:
-            self.orders[contract_id] = dict()
-        assert(mid not in self.orders)
-        label = self.all_contracts[contract_id]['label']
-        if self.is_my_order(order):
-            assert(contract_id not in self.orders or mid not in self.orders[contract_id])
-            logging.info(f"Inserted my new order on {label} order {order}")
-        else:
-            logging.debug(f"Inserted this 3rd party order on {label} order {order}")
-        self.orders[contract_id][mid] = order
+        if book_order['clock'] <= order['clock']:
+            if self.is_my_order(book_order) and not self.is_my_order(order):
+                logging.warning("Existing order is mine but replacement is not. book_order {book_order} order {order}!")
+            
+            # adjust size in the order to be the *new* size as books - filled_size
+            new_size = order['size']
+            if 'filled_size' in order and book_order['size'] > 0:
+                new_size = book_order['size'] - order['filled_size']
+                if new_size < 0:
+                    logging.warning(f"Calculated negative size {new_size} from book_order {book_order} vs {order}")
+                    new_size = 0
+            
+            logging.info(f"Adjusted size (keeping book price) from {order['size']} @ ${order['price']//100} to {new_size} @ ${book_order['price']//100} because book_order {book_order} vs trade {order}")
+            assert(new_size <= book_order['size'])
+            book_order['size'] = new_size
+            book_order['clock'] = order['clock']
 
-    def handle_order(self, order):
-        is_my_order = self.is_my_order(order)
-        mid = order['mid']
+            if book_order['size'] == 0:
+                logging.info(f"Full order filled, removing {order}")
+                self.remove_order(order)
+                assert(order['status_reason'] == 52)
+            else:
+                logging.info(f"Replaced existing order on {label} to {book_order} from {order}")
+                self.handle_book_state(contract_id, book_order)
+        else:
+            if book_order['ticks'] == order['ticks']:
+                if not inserted:
+                    logging.warning(f"Got duplicate order on {label} {book_order} vs {order}")
+            else:
+                logging.warning(f"existing order on {label} {book_order} is newer {order}, ignoring update")
+
+
+    async def handle_order(self, order):
         contract_id = order['contract_id']
 
         # update the contract if needed
@@ -312,42 +379,66 @@ class MarketState:
             self.retrieve_contract(contract_id)
         contract = self.all_contracts[contract_id]
         label = contract['label']
-        
-        if contract_id not in self.orders:
-            self.orders[contract_id] = dict()
-        contract_orders = self.orders[contract_id]
+        logging.info(f"handle_order on {contract_id} {label} {order}")
+  
+        # We expect MY orders to come in twice, once with the mpid and once without afterwards
+        is_my_order = self.is_my_order(order)
+        mid = order['mid'] 
+        if is_my_order:
+            self.my_orders.add(mid)
 
-        status = order['status_type']
-        exists = mid in contract_orders
+        book_state = self.get_book_state(contract_id)
+
+        exists = mid in book_state
         existing = None
         if exists:
-            existing = contract_orders[mid]
+            existing = book_state[mid]
             if 'mpid' in order and not is_my_order:
                 logging.warning(f"different mpid {self.mpid} for mid {mid} existing {existing} order {order}")
+
+        status = order['status_type']
+        order_clock = order['clock']
+        # check and/or set the clocks for this order
+        if contract_id not in self.contract_clock:
+            logging.info(f"No clock for {contract_id} yet")
+            contract_clock = order_clock - 1
+        else:
+            contract_clock = self.contract_clock[contract_id]
+        if contract_clock + 1 != order_clock:
+            if contract_clock < order_clock:
+                logging.warning(f"Reloading books for stale state on {contract_id}. contract_clock={contract_clock} vs {order}")
+                await self.async_load_books(contract_id)
+                contract_clock = self.contract_clock[contract_id]
+        if contract_clock + 1 != order_clock:
+            if self.action_queue is None:
+                if not exists and status == 203:
+                    pass
+                elif exists and 'mpid' in existing and 'mpid' not in order:
+                    logging.info(f"Observed second instance of my order {mid}")
+                else:
+                    logging.warning(f"Ignoring old order for {contract_id}. contract_clock={contract_clock} vs {order} existing={existing}")
+            else:
+                if order_clock <= contract_clock:
+                    logging.debug(f"Ignoring old queued action contract_clock={contract_clock} {order}")
+                else:
+                    logging.warning(f"Queued action is newer than contract_clock={contract_clock} {order}")
+            return
+        self.contract_clock[contract_id] = order_clock
+    
         
-        if not exists and status != 200:
-            logging.debug(f"traded order had not been tracked yet! {order}")
-            self.insert_new_order(order)
-            exists = True
-            existing = contract_orders[mid]
-        
-        logging.debug(f"handle_order on {contract_id} {label} {order}")
         if status == 200:
             # A resting order was inserted
-            if exists:
-                self.replace_existing_order(order)
-            else:
-                self.insert_new_order(order)
-            self.handle_book_state(contract_id, order)
+            self.insert_new_order(order)
         elif status == 201:
             # a cross (trade) occured            
             if is_my_order:
                 # This is my traded order, so track position and basis deltas
-                if mid in contract_orders:
-                    if 'mpid' in contract_orders[mid]:
-                        assert(mid in contract_orders and self.mpid == contract_orders[mid]['mpid'])
+                if mid in book_state:
+                    if 'mpid' in book_state[mid]:
+                        assert(mid in book_state and self.mpid == book_state[mid]['mpid'])
                     else:
-                        logging.warning(f"How can my order not have my mpid? existing {existing} order {order} mid {mid} {contract_orders}")
+                        logging.warning(f"How can my order not have my mpid? existing {existing} order {order} mid {mid} {book_state}")
+                
                 delta_pos = order['filled_size']
                 delta_basis = order['filled_size'] * order['filled_price']
                 
@@ -358,13 +449,6 @@ class MarketState:
                     # bought
                     logging.info("Observed purchase of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}/mi")
 
-                if order['size'] != 0:
-                    logging.info(f"Partial fill Cross trade {delta_pos} ${delta_basis//100} {existing} {order}")
-                    self.replace_existing_order(order)
-                else:
-                    logging.info(f"Full fill Cross trade {delta_pos} ${delta_basis//100} {existing} {order}")
-                    del contract_orders[mid]
-
                 #if 'id' in position:
                 #    size = position['size']
                 #    basis = position['basis']
@@ -372,15 +456,7 @@ class MarketState:
                 #    if position['size'] != size or position['basis'] != basis:
                 #        logging.warning(f"After refresh of trades, size and/or basis do not agree with approximation: {size} {basis} {position} {order}")
 
-            else:
-                logging.debug(f"Updating order for books {order}")
-                self.replace_existing_order(order)
-
-            if order['size'] != 0:
-                self.handle_book_state(contract_id, order)
-            else:
-                self.delete_book_state(contract_id, mid)
-
+            self.replace_existing_order(order)
             self.handle_trade(order)
 
         elif status == 202:
@@ -388,30 +464,32 @@ class MarketState:
             logging.warning(f"dunno how to handle not filled market order on {label} {existing} {order}")
         elif status == 203:
             # cancelled
-            if exists:
-                logging.debug(f"Deleting cancelled order on {label} {existing} {order}")
-                del contract_orders[mid]
-            else:
-                logging.debug(f"Ignoring untracked cancelled order on {label} {order}")
-            # handle copy in book_states, if needed
-            self.delete_book_state(contract_id, mid)
+            logging.info(f"Deleting cancelled order on {label} {existing} {order}")
+            self.remove_order(order)
+        elif status == 204:
+            # canceled and replaced
+            logging.info(f"Cancel and replace order on {label} {existing} {order}")
+            self.remove_order(order)
+            self.insert_new_order(order)
         elif status == 300:
             logging.info(f"Acknowledged on {label} {existing} {order}")
         elif status == 610:
             # expired
             logging.info(f"Expired on {label} {existing} {order}")
-            if exists:
-                del contract_orders[mid]
-            self.delete_book_state(contract_id, mid)
+            self.remove_order(order)
         elif status >= 600:
             logging.warning(f"invalid or rejected order {order}")
-            if exists:
-                del contract_orders[mid]
+            self.remove_order(order)
+        else:
+            logging.warning(f"Unhandled status_type {status} on {label} {existing} {order}")
+        
+        new_top = self.get_top_from_book_state(contract_id)
+        self.check_book_top(new_top)
 
     def get_top_from_book_state(self, contract_id):
         if contract_id not in self.book_states:
             logging.info(f"need books for {contract_id}")
-            self.load_books(contract_id)
+            return None
         books = self.book_states[contract_id]
         ask = None
         bid = None
@@ -420,40 +498,88 @@ class MarketState:
         contract = self.all_contracts[contract_id]
         logging.debug(f"get_top_from_book_state contract_id {contract_id} contract {contract} books {books}")
         clock = -1
+        best_ask = None
+        best_bid = None
         for mid,book in books.items():
+            if clock < book['clock']:
+                clock = book['clock']
+            if mid == 'last_delete_clock':
+                continue
             assert(mid == book['mid'])
             is_ask = book['is_ask']
             price = book['price']
             if is_ask:
                 if ask is None or ask > price:
                     ask = price
+                    best_ask = book
             else:
                 if bid is None or bid < price:
                     bid = price
-            if clock < book['clock']:
-                clock = book['clock']
-        book_top = dict(ask= ask, bid= bid, contract_id= contract_id, contract_type= None, clock=clock, type= 'book_top')
-        if contract_id not in self.book_top or self.book_top[contract_id]['clock'] < clock:
-            self.book_top[contract_id] = book_top
-        logging.info(f"Top for {contract_id} {contract['label']} {book_top}")
+                    best_bid = book
+
+        book_top = dict(ask= ask, bid= bid, contract_id= contract_id, contract_type= None, clock=clock, type= 'book_top', synthetic=True)
+        logging.info(f"best_ask={best_ask} best_bid={best_bid}")
+        return book_top
+
+    def check_book_top(self, new_book_top):
+        contract_id = new_book_top['contract_id']
+        clock = new_book_top['clock']
+        # check the contract clock updated with book_states and orders that should >= to any websocket book_top or synthetic book_top
+        if contract_id in self.contract_clock:
+            contract_clock = self.contract_clock[contract_id]
+            if contract_clock < clock:
+                logging.warning(f"contract {contract_id} contract_clock={contract_clock} is {clock-contract_clock} OLDER than new_book_top={new_book_top}")
+        old_book_top = None
+        if contract_id in self.book_top:
+            old_book_top = self.book_top[contract_id]
+        if old_book_top is None or old_book_top['clock'] < clock:
+            if old_book_top is not None:
+                diff = clock - old_book_top['clock']
+                logging.info(f"new_book_top is newer than existing book_top by {diff} new_book_top={new_book_top} old_book_top={old_book_top}")
+            logging.info(f"Setting book_top {new_book_top}")
+            book_top = self.book_top[contract_id] = new_book_top
+        elif old_book_top['clock'] > clock:
+            diff = old_book_top['clock'] - clock
+            logging.info(f"existing book top is newer than book by {diff} new_book_top={new_book_top} old_book_top={old_book_top}")
+            book_top = old_book_top
+        elif old_book_top['clock'] == clock:
+            book_top = old_book_top
+            matches = True
+            nask = new_book_top['ask']
+            oask = old_book_top['ask']
+            if nask == oask or (nask is None and oask == 0) or (nask == 0 and oask is None):
+                pass
+            else:
+                matches = False
+            nbid = new_book_top['bid']
+            obid = old_book_top['bid']
+            if nbid == obid or (nbid is None and obid == 0) or (nbid == 0 and obid is None):
+                pass
+            else:
+                matches = False
+            if not matches:
+                logging.warning(f"discrepancy between new_book_top={new_book_top} and old_book_top={old_book_top}")
+            else:
+                logging.info(f"book_top matches book_state clock {self.book_top[contract_id]}")
+        logging.debug(f"Top for {contract_id} {book_top}")
         return book_top
         
     def handle_book_state(self, contract_id, book_state):
         """{clock": 57906, "entry_id": "81d87376167f400fb6545234600856b2", "is_ask": true, "price": 884000, "size": 1}"""
-        logging.debug(f"handle_book_state {contract_id} {book_state}")
+        logging.info(f"handle_book_state {contract_id} {book_state}")
         assert('mid' in book_state)
         if contract_id not in self.book_states:
-            logging.info(f"Ignoring book state for {contract_id} as no books have been loaded or are loading")
-            return
+            self.book_states[contract_id] = dict()
         books = self.book_states[contract_id]
         mid = book_state['mid']
+        assert(mid != 'last_delete_clock')
         if mid in books:
             book_order = books[mid]
             if book_state['clock'] < book_order['clock']:
                 logging.info(f"Ignoring old book_state={book_state} orig={book_order}")
                 return
             for key in book_order.keys():
-                if key in book_state:
+                if key in book_state: 
                     book_order[key] = book_state[key]
         else:
             books[mid] = book_state
@@ -469,23 +595,10 @@ class MarketState:
         self.book_states[contract_id] = dict()
         for state in book_states['book_states']:
             self.handle_book_state(contract_id, state)
-        self.get_top_from_book_state(contract_id)
+        book_top = self.get_top_from_book_state(contract_id)
+        self.contract_clock[contract_id] = book_top['clock']
+        self.check_book_top(book_top)
     
-    def load_books(self, contract_id):
-        logging.info(f"Loading books for {contract_id}")
-        if contract_id not in self.all_contracts:
-            self.retrieve_contract(contract_id)
-        contract = self.all_contracts[contract_id]
-        if self.contract_is_expired(contract):
-            logging.info(f"Skiping book loading on expired contract {contract}")
-            return
-
-        try:
-            book_states = ledgerx.BookStates.get_book_states(contract_id)
-            self.handle_all_book_states(book_states)
-            logging.info(f"Added {len(book_states['book_states'])} open orders for {contract_id}")
-        except:
-            logging.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
         
     def get_top_book_states(self, contract_id, clock_lag = 0):
         """
@@ -512,6 +625,8 @@ class MarketState:
             logging.info(f"reloading stale books for {contract_id}")
             self.load_books(contract_id)
         for mid,book_state in self.book_states[contract_id].items():
+            if mid == 'last_delete_clock':
+                continue
             if book_state['is_ask']:
                 if top_ask_book_state is None or top_ask_book_state['price'] > book_state['price']:
                     top_ask_book_state = dict(**book_state)
@@ -533,8 +648,7 @@ class MarketState:
                 top_book_states[1]['size']=1
         return top_book_states
 
-
-    def legacy_load_books(self, contract_id):
+    def load_books(self, contract_id):
         logging.info(f"Loading books for {contract_id}")
         if contract_id not in self.all_contracts:
             self.retrieve_contract(contract_id)
@@ -572,7 +686,7 @@ class MarketState:
         except:
             logging.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
  
-    async def async_load_all_books(self, contracts, max_parallel = 60):
+    async def async_load_all_books(self, contracts, max_parallel = 200):
         logging.info(f"loading all books for {len(contracts)} and max={max_parallel}")
         if self.action_queue is None:
             self.action_queue = [] # will process queued actions on completion
@@ -581,21 +695,11 @@ class MarketState:
         for contract_id in contracts:
             logging.info(f"loading books for {contract_id}")
             fut = self.async_load_books(contract_id)
-            logging.info(f"appending future {fut} for books for {contract_id}")
             futures.append( fut )
         if len(futures) > 0:
             await asyncio.gather( *futures )
         logging.info(f"Done loading all books")
         await self.handle_queued_actions()
-    
-    def delete_book_state(self, contract_id, mid):
-        if contract_id not in self.book_states:
-            # do not bother loading the book states
-            logging.info(f"Ignoring deleted book on untraced contract {contract_id}")
-            return
-        if mid in self.book_states[contract_id]:
-            logging.debug(f"Removing order from books {self.book_states[contract_id][mid]}")
-            del self.book_states[contract_id][mid]
 
     def get_next_day_swap(self, asset):
         next_day_contract = None
@@ -797,6 +901,7 @@ class MarketState:
                 self.accounts[balance][asset] = val
 
     async def book_top_action(self, action) -> bool:
+        logging.info(f"book_top {action}")
         assert(action['type'] == 'book_top')
         contract_id = action['contract_id']
         if contract_id == 0:
@@ -838,7 +943,7 @@ class MarketState:
             if self.last_heartbeat['ticks'] >= action['ticks']:
                 logging.warning(f"Out of order heartbeats last={self.last_heartbeat} now={action}")
             if self.last_heartbeat['run_id'] != action['run_id']:
-                logging.info("Reloading market state")
+                logging.warning("Reloading market state after new run_id new={action} old={self.last_heartbeat}")
                 await self.load_market()
         self.last_heartbeat = action
 
@@ -846,15 +951,16 @@ class MarketState:
         now = dt.datetime.now(tz=self.timezone)
         delay = (now - beat_time).total_seconds()
         if delay > 2:
-            logging.warning(f"Processed old heartbeat {delay} seconds old {action}")
+            if self.action_queue is None:
+                logging.warning(f"Processed old heartbeat {delay} seconds old {action}")
             # do not perform any more work
             return
-        await self.load_remaining_books(20)
+        await self.load_remaining_books()
 
     async def action_report_action(self, action):
         logging.debug(f"ActionReport {action}")
         assert(action['type'] == 'action_report')
-        self.handle_order(action)
+        await self.handle_order(action)
 
     async def handle_queued_actions(self):
         if self.action_queue is not None:
@@ -869,7 +975,7 @@ class MarketState:
     async def handle_action(self, action, force_run = False):
         if self.action_queue is not None and not force_run:
             self.action_queue.append(action)
-            logging.info(f"queueing action while updating with {len(self.action_queue)} pending")
+            logging.info(f"queueing action {action['type']} while updating with {len(self.action_queue)} pending")
             return
         type = action['type']
         logging.debug(f"handle_action {type} force_run={force_run}")
@@ -886,7 +992,7 @@ class MarketState:
         elif type == 'exposure_reports':
             logging.info(f"Exposure report {action}")
         elif type == 'websocket_starting':
-            logging.info(f"Websocket has started {action}, books may be stale and need to be resynced")
+            logging.warning(f"Websocket has started {action}, books may be stale and need to be resynced")
             await self.load_market()
         elif type == 'contract_added':
             self.contract_added_action(action)
@@ -1121,7 +1227,7 @@ class MarketState:
         logging.info(f"Found {len(self.all_contracts.keys())} Contracts")
 
         # load my open orders
-        self.orders.clear()
+        self.my_orders.clear()
         num = 0
         for order in ledgerx.Orders.open()['data']:
             if self.mpid is None:
@@ -1130,10 +1236,10 @@ class MarketState:
                 self.cid = order['cid']
             assert(self.mpid == order['mpid'])
             assert(self.cid == order['cid'])
-            logging.debug(f"open order {order}")
-            self.handle_order(order)
+            logging.info(f"open order {order}")
+            self.my_orders.add(order['mid'])
             num += 1
-        logging.info(f"Found {num} Open Order over {len(self.orders.keys())} contracts")
+        logging.info(f"Found {num} of MY open orders")
 
         # load the set of contracts traded in my account
         self.set_traded_contracts()
@@ -1155,18 +1261,11 @@ class MarketState:
         if self.action_queue is None:
             self.action_queue = [] # async_load_all_books will process queued actions
 
-        # TODO is this still needed? --- await self.load_all_transactions()
-
-        # get the positions for the my traded contracts
-        #expired_contracts = await ledgerx.Contracts.async_list_all(dict(active = 'False'))
-        #logging.info(f"Got {len(expired_contracts)} Expired contracts")
-        #for contract in expired_contracts:
-        #    self.add_contract(contract)
-        #    self.expired_contracts[contract['id']] = contract
-
         await self.async_update_all_positions()
+        logging.info("Updated all positions")
 
         await self.async_load_all_books(list(self.all_contracts.keys()))
+        logging.info("Loaded all books")
 
         # get all the trades for each of my positions
         # and calculate basis & validate the balances
@@ -1178,6 +1277,7 @@ class MarketState:
             futures.append(future)
         if len(futures) > 0:
             await asyncio.gather( *futures )
+        logging.info("Updated trades for all my positions")
                         
         if not self.skip_expired:
             # zero out expired positions -- they no longer exist
@@ -1246,7 +1346,7 @@ class MarketState:
         logging.info(f"Net to close ${total_net_close} with basis ${total_net_basis//100} = ${total_net_close - total_net_basis//100} to close all positions at best (top) price.  Did not explore all books for size")
 
     def handle_trade(self, action_report):
-        logging.info(f"looking if last trade is {action_report}")
+        logging.debug(f"looking if last trade is {action_report}")
         contract_id = int(action_report['contract_id'])
         last = None
         test = dict(id=None, contract_id=contract_id, order_type=action_report['order_type'], \
@@ -1293,7 +1393,7 @@ class MarketState:
         await ledgerx.Trades.async_list_all_incremental_return(dict(after_ts=after_date,before_ts=before_date),self.process_trades)
         logging.info(f"Finished loading past trades")
 
-    async def load_remaining_books(self, max = 20):
+    async def load_remaining_books(self, max = 100):
         futures = []
         count = 0
         to_update = list(self.to_update_basis.items())
