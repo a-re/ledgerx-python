@@ -104,7 +104,9 @@ class WebSocket:
         elif type == 'auth_success':
             logging.info("Successful auth connection")            
         elif 'contact_' in type:
-            logging.debug(f"contact change {data}")
+            logging.info(f"contact change {data}")
+        elif 'conversation_' in type:
+            logging.info(f"conversation change {data}")
         elif type == 'websocket_starting':
             logging.info(f"Websocket just started {data}")
         else:
