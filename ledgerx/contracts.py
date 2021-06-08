@@ -120,6 +120,12 @@ class Contracts:
         qps = {**cls.default_list_params, **params}
         return await GenericResource.async_list_all(url, qps, include_api_key, 0)
 
+    @classmethod
+    async def async_list_all_traded(cls, params: Dict = {}) -> List[str]:
+        include_api_key = True
+        url = gen_url("/trading/contracts/traded")
+        qps = {**cls.default_list_traded, **params}
+        return await GenericResource.async_list_all(url, qps, include_api_key)
 
     @classmethod
     async def async_retrieve(cls, contract_id: int) -> Dict:

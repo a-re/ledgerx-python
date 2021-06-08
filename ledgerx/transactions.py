@@ -33,3 +33,11 @@ class Transactions:
         url = gen_url("/funds/transactions")
         qps = {**cls.default_list_params, **params}
         return GenericResource.list_all(url, qps, include_api_key)
+
+    @classmethod
+    async def async_list_all(cls, params: Dict = {}) -> List[Dict]:
+        include_api_key = True
+        url = gen_url("/funds/transactions")
+        qps = {**cls.default_list_params, **params}
+        return await GenericResource.async_list_all(url, qps, include_api_key)
+    
