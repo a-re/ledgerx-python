@@ -157,6 +157,13 @@ class MarketState:
         return None
 
     @staticmethod
+    def is_same_0_or_None(a, b):
+        if a == b or (a is None and b == 0) or (a == 0 and b is None) or (a is None and b is None):
+            return True
+        else:
+            return False
+
+    @staticmethod
     def fee(price, size, price_units = 100):
         # $0.15 per contract or 20% of price whichever is less
         fee_per_contract = price // (5 * price_units) # 20%
@@ -266,7 +273,7 @@ class MarketState:
     def is_my_order(self, order):
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
         if is_it and order['mid'] not in self.my_orders:
-            logging.warn(f"MY order {order} is not tracked in my_orders {self.my_orders}")
+            self.my_orders.add(order['mid'])
         return is_it
 
     def get_book_state(self, contract_id):
@@ -302,8 +309,8 @@ class MarketState:
                 book_order['size'] = order['original_size']
                 logging.info(f"Replaced order size and price with original values")
         if self.is_my_order(order):
-            assert(mid not in book_state)
             logging.info(f"Inserted my new order on {label} book {book_order} from order {order}")
+            self.my_orders.add(mid)
         else:
             logging.debug(f"Inserted this 3rd party order on {label} book {book_order} from order {order}")
         book_state[mid] = book_order
@@ -344,7 +351,8 @@ class MarketState:
         label = contract['label']
         if book_order['clock'] <= order['clock']:
             if self.is_my_order(book_order) and not self.is_my_order(order):
-                logging.warning("Existing order is mine but replacement is not. book_order {book_order} order {order}!")
+                logging.info("Existing order is mine but replacement is not. Adding mpid to order.  existing book_order {book_order} order {order}!")
+                order['mpid'] = book_order['mpid']
             
             # adjust size in the order to be the *new* size as books - filled_size
             new_size = order['size']
@@ -421,7 +429,10 @@ class MarketState:
                 elif exists and 'mpid' in existing and 'mpid' not in order:
                     logging.info(f"Observed second instance of my order {mid}")
                 else:
-                    logging.warning(f"Ignoring old order for {contract_id}. contract_clock={contract_clock} vs {order} existing={existing}")
+                    if not exists and status == 201 and order['status_reason'] == 52:
+                        logging.info(f"Observed second instance of (likely my) full-filled order {order}")
+                    else:
+                        logging.warning(f"Ignoring old order for {contract_id}. contract_clock={contract_clock} vs {order} existing={existing}")
             else:
                 if order_clock <= contract_clock:
                     logging.debug(f"Ignoring old queued action contract_clock={contract_clock} {order}")
@@ -446,7 +457,7 @@ class MarketState:
                     logging.info(f"Observed sale of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}")
                 else:
                     # bought
-                    logging.info("Observed purchase of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}/mi")
+                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}/mi")
 
                 #if 'id' in position:
                 #    size = position['size']
@@ -546,13 +557,13 @@ class MarketState:
             matches = True
             nask = new_book_top['ask']
             oask = old_book_top['ask']
-            if nask == oask or (nask is None and oask == 0) or (nask == 0 and oask is None):
+            if MarketState.is_same_0_or_None(nask,oask):
                 pass
             else:
                 matches = False
             nbid = new_book_top['bid']
             obid = old_book_top['bid']
-            if nbid == obid or (nbid is None and obid == 0) or (nbid == 0 and obid is None):
+            if MarketState.is_same_0_or_None(nbid,obid):
                 pass
             else:
                 matches = False
@@ -603,11 +614,14 @@ class MarketState:
         """
         returns (top_bid_book_state, top_ask_book_state, clock_lag), after comparing top with all book states
         refreshing book states, if needed
+        compares clocks with book_top and contract_clock / book_states
         """
         top_bid_book_state = None
         top_ask_book_state = None
         top_clock = -1
-        if contract_id in self.book_states:
+        if contract_id in self.contract_clock:
+            top_clock = self.contract_clock[contract_id]
+        if top_clock < 0 and contract_id in self.book_states:
             for mid,book_state in self.book_states[contract_id].items():
                 if top_clock < book_state['clock']:
                     top_clock = book_state['clock']
@@ -615,13 +629,14 @@ class MarketState:
         if contract_id in self.book_top:
             lag = self.book_top[contract_id]['clock'] - top_clock
             if lag < 0:
-                # do not reload books because book_top is behind, trust the book_states
+                # do not reload books because book_top is behind, trust the book_states with higher clock (such as immediately after loading books)
+                logging.info(f"book_states on {contract_id} are {-lag} ahead of book_top")
                 lag = 0
         if lag < 0 or lag > clock_lag: # avoid excessive book reloading -- allow book_top to be a few clocks ahead
-            logging.warning(f"book top is too far away of cached book states by {lag} book_states_top_clock={top_clock} vs book_top={self.book_top[contract_id]}")
+            logging.warning(f"Book top is too far away of cached book states by {lag} book_states_top_clock={top_clock} vs book_top={self.book_top[contract_id]}")
             top_clock = None
         if top_clock is None or contract_id not in self.book_top or contract_id not in self.book_states:
-            logging.warning(f"reloading stale books for {contract_id}")
+            logging.warning(f"Reloading stale books for {contract_id} {self.all_contracts[contract_id]['label']}")
             self.load_books(contract_id)
         for mid,book_state in self.book_states[contract_id].items():
             if mid == 'last_delete_clock':
@@ -636,7 +651,7 @@ class MarketState:
             logging.info(f"top book states are missing {top_bid_book_state} {top_ask_book_state}")
         return (top_bid_book_state, top_ask_book_state, lag)
 
-    def get_top_book_states_estimate(self, contract_id, max_lag = 5):
+    def get_top_book_states_estimate(self, contract_id, max_lag = 10):
         """Returns the top_book_states, but does not force a refresh if the book state is lagging and returns size==1 if it is lagging"""
         top_book_states = self.get_top_book_states(contract_id, max_lag)
         if top_book_states[2] > 2:
@@ -862,6 +877,7 @@ class MarketState:
                 self.contract_positions[contract_id] = position
                 update_all.append(contract_id)
                 logging.info(f"No position for {contract_id}")
+        futures = []
         if len(update_all) > 0:
             logging.info(f"Getting new positions for at least these new contracts {update_all}")
             needs_all = False
@@ -869,19 +885,22 @@ class MarketState:
                 if contract_id not in self.contract_positions:
                     needs_all = True
                 else:
-                    await self.async_update_position(contract_id)
+                    future = self.async_update_position(contract_id)
+                    futures.append(future)
             if needs_all:
                 logging.warning(f"Need all positions refreshed")
-                await self.async_update_all_positions()
+                future = self.async_update_all_positions()
+                futures.append(future)
                 
         if len(update_basis) > 0:
             logging.info(f"Getting updated basis for these contracts {update_basis}")
-            futures = []
+            
             for contract_id in update_basis:
                 future = self.async_update_position(contract_id)
                 futures.append(future)
-            if len(futures) > 0:
-                await asyncio.gather( *futures )
+
+        if len(futures) > 0:
+            await asyncio.gather( *futures )
 
     def collateral_balance_action(self, action):
         logging.info(f"Collateral {action}")
@@ -898,12 +917,12 @@ class MarketState:
     async def book_top_action(self, action) -> bool:
         assert(action['type'] == 'book_top')
         contract_id = action['contract_id']
-        logging.info(f"book_top contract={contract_id} clock={action['clock']} {action}")
+        logging.debug(f"book_top contract={contract_id} clock={action['clock']} {action}")
         if contract_id == 0:
             logging.warning(f"Got erroneous book_top {action}")
             return False
         if contract_id not in self.all_contracts:
-            logging.info(f"loading contract for book_top {contract_id} {action}")
+            logging.warning(f"loading contract for book_top {contract_id} {action}")
             await self.async_retrieve_contract(contract_id)
             await self.async_load_books(contract_id)
             logging.info(f"ignoring possible stale book top {action}")
@@ -921,7 +940,7 @@ class MarketState:
                 return True
             else:
                 if top['clock'] == action['clock']:
-                    if top['ask'] == action['ask'] and top['bid'] == action['bid']:
+                    if MarketState.is_same_0_or_None(top['ask'],action['ask']) and MarketState.is_same_0_or_None(top['bid'],action['bid']):
                         logging.debug(f"Ignored duplicate book top {action}")
                     else:
                         logging.warning(f"Found DIFFERENT book_top with same clock {top} {action}")
@@ -930,7 +949,10 @@ class MarketState:
                 return False
 
     async def heartbeat_action(self, action):
-        logging.info(f"Heartbeat {action}")
+        now = dt.datetime.now(tz=self.timezone)
+        beat_time = dt.datetime.fromtimestamp(action['timestamp'] // 1000000000, tz=self.timezone)
+        delay = (now - beat_time).total_seconds()
+        logging.info(f"Heartbeat delay={delay} {action}")
         assert(action['type'] == 'heartbeat')
         if self.last_heartbeat is None:
             pass
@@ -943,10 +965,6 @@ class MarketState:
         self.last_heartbeat = action
 
         if self.action_queue is None:
-            beat_time = dt.datetime.fromtimestamp(action['timestamp'] // 1000000000, tz=self.timezone)
-            now = dt.datetime.now(tz=self.timezone)
-            delay = (now - beat_time).total_seconds()
-        
             if delay > 2:        
                 logging.warning(f"Processed old heartbeat {delay} seconds old {action}")
                 # do not perform any more work
@@ -966,7 +984,7 @@ class MarketState:
             self.action_queue = []
             return True
         else:
-            logging.info("Actions are already being queued")
+            logging.debug("Actions are already being queued")
             return False
 
     async def handle_queued_actions(self):
@@ -979,7 +997,7 @@ class MarketState:
                 count += 1
             assert(len(self.action_queue) == 0)
             self.action_queue = None
-        logging.info(f"Completed processing {count} queued actions")
+        logging.info(f"Done processing {count} queued actions")
             
     async def handle_action(self, action, force_run = False):
         if self.action_queue is not None and not force_run:
@@ -1239,7 +1257,7 @@ class MarketState:
         # load my open orders
         self.my_orders.clear()
         num = 0
-        for order in ledgerx.Orders.open()['data']:
+        for order in ledgerx.Orders.list_open()['data']:
             if self.mpid is None:
                 self.mpid = order['mpid']
             if self.cid is None:
@@ -1247,6 +1265,7 @@ class MarketState:
             assert(self.mpid == order['mpid'])
             assert(self.cid == order['cid'])
             logging.info(f"open order {order}")
+            assert('mpid' in order)
             self.my_orders.add(order['mid'])
             num += 1
         logging.info(f"Found {num} of MY open orders")
@@ -1475,13 +1494,11 @@ class MarketState:
 
     async def __start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
         loop = asyncio.get_running_loop()
-        
         task1 = await loop.run_in_executor(executor, self.load_latest_trades)
         task2 = await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port)
         await asyncio.gather( task1, task2 ) 
 
-    def start_websocket_and_run(self, include_api_key=False, repeat_server_port=None):
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    def start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
         logging.info(f"Starting market_state = {self}")
         
         loop = asyncio.get_event_loop()
