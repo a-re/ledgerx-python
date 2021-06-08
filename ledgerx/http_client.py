@@ -89,6 +89,14 @@ class HttpClient:
 
     aiohttp_session = None
     @classmethod
+    def bootstrap_aiohttp_session(cls):
+        loop = asyncio.get_event_loop()
+        if cls.aiohttp_session is None:
+            logging.info(f"new aiohttp.ClientSession")
+            cls.aiohttp_session = aiohttp.ClientSession(loop=loop)
+        return cls.aiohttp_session
+
+    @classmethod
     async def async_get(cls,
         url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
@@ -102,11 +110,8 @@ class HttpClient:
         Returns:
             requests.Response: [description]
         """
-        # bootstrap the session
-        loop = asyncio.get_event_loop()
-        if cls.aiohttp_session is None:
-            logging.info(f"new aiohttp.ClientSession")
-            cls.aiohttp_session = aiohttp.ClientSession(loop=loop)
+
+        aiohttp_session = cls.bootstrap_aiohttp_session()
         
         delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
@@ -115,7 +120,7 @@ class HttpClient:
         while True:
             logging.info(f"getting {url} {'Authorization' in headers} {params}")
             #res = await loop.run_in_executor(None, requests.get, url, dict(**params, headers=headers))
-            res = await cls.aiohttp_session.get(url, headers=headers, params=params)
+            res = await aiohttp_session.get(url, headers=headers, params=params)
             logging.debug(f"got from {url} : res={res}")
 
             if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
@@ -130,4 +135,46 @@ class HttpClient:
             else:
                 res.raise_for_status()
                 break
+        return res
+
+    @classmethod
+    async def async_post(cls,
+        url: str, data: Dict = {}, include_api_key: bool = False
+    ) -> requests.Response:
+        """Execute http post request
+
+        Args:
+            url (str): [description]
+            data (Dict, optional): [description]. Defaults to {}.
+            include_api_key (bool, optional): [description]. Defaults to False.
+
+        Returns:
+            requests.Response: [description]
+        """
+        aiohttp_session = cls.bootstrap_aiohttp_session()
+        headers = gen_headers(include_api_key)
+        res = await aiohttp_session.post(url, headers=headers, json=data)
+        logging.debug(f"post {url} {res}")
+        res.raise_for_status()
+        return res
+
+    @classmethod
+    async def async_delete(cls,
+        url: str, params: Dict = {}, include_api_key: bool = False
+    ) -> requests.Response:
+        """Execute http delete request
+
+        Args:
+            url (str): [description]
+            params (Dict, optional): [description]. Defaults to {}.
+            include_api_key (bool, optional): [description]. Defaults to False.
+
+        Returns:
+            [type]: [description]
+        """
+        aiohttp_session = cls.bootstrap_aiohttp_session()
+        headers = gen_headers(include_api_key)
+        res = await aiohttp_session.delete(url, params=params, headers=headers)
+        logging.debug(f"delete {url} {res}")
+        res.raise_for_status()
         return res
