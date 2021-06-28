@@ -203,6 +203,11 @@ class MarketState:
         else:
             return True
 
+    def contract_label(self, contract_id):
+        if contract_id in self.all_contracts:
+            return self.all_contracts[contract_id]['label']
+        return None
+
     def get_filtered_contracts(self, **kwargs):
         """Returns a list of contracts filtered by any key-value in a contract"""
         return_contracts = []
@@ -276,9 +281,25 @@ class MarketState:
         self.exp_dates.sort()
 
     def is_my_order(self, order):
+        if self.mpid is None and 'mpid' in order and order['mpid'] is not None:
+            assert(self.cid is None)
+            assert(order['cid'] is not None)
+            # bootstrap mpid and cid from the first order of mine
+            if self.mpid is None:
+                self.mpid = order['mpid']
+            if self.cid is None:
+                self.cid = order['cid']
+            assert(self.mpid == order['mpid'])
+            assert(self.cid == order['cid'])
+        if self.mpid is None:
+            return False
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
-        if is_it and order['mid'] not in self.my_orders:
+        if is_it:
+            if order['mid'] not in self.my_orders:
+                logging.info(f"Newly added my order {order['mid']} {order}")
             self.my_orders.add(order['mid'])
+        if not is_it and order['mid'] in self.my_orders:
+            is_it = True
         return is_it
 
     def get_book_state(self, contract_id):
@@ -308,14 +329,13 @@ class MarketState:
             if order['inserted_size'] != 0:
                 book_order['price'] = order['inserted_price']
                 book_order['size'] = order['inserted_size']
-                logging.info(f"Replaced order size and price with inserted values")
+                logging.debug(f"Replaced order size and price with inserted values")
             else:
                 book_order['price'] = order['original_price']
                 book_order['size'] = order['original_size']
-                logging.info(f"Replaced order size and price with original values")
+                logging.debug(f"Replaced order size and price with original values")
         if self.is_my_order(order):
             logging.info(f"Inserted my new order on {label} book {book_order} from order {order}")
-            self.my_orders.add(mid)
         else:
             logging.debug(f"Inserted this 3rd party order on {label} book {book_order} from order {order}")
         book_state[mid] = book_order
@@ -329,6 +349,7 @@ class MarketState:
         if mid in book_state:
             del book_state[mid]
         if mid in self.my_orders:
+            logging.info(f"Removed my order {mid} {order}")
             self.my_orders.remove(mid)
         if 'clock' in order:
             book_state['last_delete_clock'] = dict(clock=order['clock'])
@@ -396,14 +417,15 @@ class MarketState:
             self.retrieve_contract(contract_id)
         contract = self.all_contracts[contract_id]
         label = contract['label']
-        logging.debug(f"handle_order on {contract_id} {label} {order}")
+        #logging.info(f"handle_order on {contract_id} {label} {order}")
         logging.debug(f"handle_order on {contract_id} clock={order['clock']} {label} status_type={order['status_type']} mid={order['mid']}")
   
         # We expect MY orders to come in twice, once with the mpid and once without afterwards
         is_my_order = self.is_my_order(order)
         mid = order['mid'] 
         if is_my_order:
-            self.my_orders.add(mid)
+            logging.info(f"handling my order {order}")
+            assert(mid in self.my_orders)
 
         book_state = self.get_book_state(contract_id)
 
@@ -452,7 +474,7 @@ class MarketState:
             self.insert_new_order(order)
         elif status == 201:
             # a cross (trade) occured            
-            if is_my_order:
+            if is_my_order and 'mpid' in order:
                
                 delta_pos = order['filled_size']
                 delta_basis = order['filled_size'] * order['filled_price']
@@ -581,7 +603,7 @@ class MarketState:
         
     def handle_book_state(self, contract_id, book_state):
         """{clock": 57906, "entry_id": "81d87376167f400fb6545234600856b2", "is_ask": true, "price": 884000, "size": 1}"""
-        logging.info(f"handle_book_state {contract_id} {book_state}")
+        logging.debug(f"handle_book_state {contract_id} {book_state}")
         assert('mid' in book_state)
         if contract_id not in self.book_states:
             self.book_states[contract_id] = dict()
@@ -591,7 +613,7 @@ class MarketState:
         if mid in books:
             book_order = books[mid]
             if book_state['clock'] < book_order['clock']:
-                logging.info(f"Ignoring old book_state={book_state} orig={book_order}")
+                logging.debug(f"Ignoring old book_state={book_state} orig={book_order}")
                 return
             for key in book_order.keys():
                 if key in book_state: 
@@ -1034,7 +1056,7 @@ class MarketState:
         elif type == 'heartbeat':
             await self.heartbeat_action(action)
         elif type == 'bitvol':
-            logging.info(f"bit_vol: {action}")
+            logging.debug(f"bit_vol: {action}")
             BitvolCache.update_cached_bitvol(action)
         elif type == 'collateral_balance_update':
             self.collateral_balance_action(action)
@@ -1291,12 +1313,8 @@ class MarketState:
         self.my_orders.clear()
         num = 0
         for order in ledgerx.Orders.list_open()['data']:
-            if self.mpid is None:
-                self.mpid = order['mpid']
-            if self.cid is None:
-                self.cid = order['cid']
-            assert(self.mpid == order['mpid'])
-            assert(self.cid == order['cid'])
+            assert('mpid' in order)
+            assert(self.is_my_order(order))
             logging.info(f"open order {order}")
             assert('mpid' in order)
             self.my_orders.add(order['mid'])
@@ -1423,7 +1441,7 @@ class MarketState:
         if contract_id in self.last_trade:
             last = self.last_trade[contract_id]
         if last is None or test['timestamp'] > last['timestamp']:
-            logging.info(f"Updated last trade on {contract_id} from {last} to {test}")
+            logging.debug(f"Updated last trade on {contract_id} from {last} to {test}")
             self.last_trade[contract_id] = test
 
     def get_last_trade(self, contract_id):
