@@ -13,12 +13,15 @@ import ledgerx
 
 class WebSocket:
 
-    connection = None
-    update_callbacks = list()
-    run_id = None
-    heartbeat = None
+    websocket = None
+    #connection = None
+    #update_callbacks = list()
+    #run_id = None
+    #heartbeat = None
     localhost_connections = []
     include_api_key = False
+    active = True
+    repeat_server = None
 
     def __init__(self):
         self.clear()
@@ -26,7 +29,7 @@ class WebSocket:
     def clear(self):
         self.connection = None
         self.update_callbacks = list()
-        self.run_id = None
+        #self.run_id = None
         self.heartbeat = None
         self.apikey = None
         self.include_api_key = False
@@ -109,18 +112,32 @@ class WebSocket:
             logging.info(f"conversation change {data}")
         elif type == 'websocket_starting':
             logging.info(f"Websocket just started {data}")
+        elif type == 'websocket_exception':
+            logging.warn(f"websocket_exception {data}")
+        elif type == 'subscribe':
+            logging.info(f"subscribed: {data}")
+        elif type == 'unsubscribe':
+            logging.info(f"unsubscribe: {data}")
+        elif type == 'bitvol':
+            logging.debug(f"bitvol {data}")
         else:
             logging.warn(f"Unknown type '{type}': {data}")
 
+        futures = []
         for callback in self.update_callbacks:
             if asyncio.iscoroutinefunction(callback):
-                await callback(data)
+                futures.append( callback(data) )
             else:
                 callback(data)
+        if len(futures) > 0:
+            await asyncio.gather(*futures)
 
     async def consumer_handle(self, websocket: websockets.client.WebSocketClientProtocol) -> None:
         logging.info(f"consumer_handle starting: {websocket}")
         async for message in websocket:
+            if not WebSocket.active:
+                logging.info(f"WebSocket is no longer active")
+                return
             logging.debug(f"Received: {message}")
             data = json.loads(message)
             if 'type' in data:
@@ -141,11 +158,34 @@ class WebSocket:
         logging.info(f"listening to websocket: {self.connection}")
         async with self.connection as websocket:
             logging.info(f"...{websocket}")
+            await self.subscribe(websocket, ['btc_bitvol', 'eth_bitvol'])
             await self.consumer_handle(websocket)
-        logging.error(f"stopped listening to websocket: {self.connection}")
-        raise RuntimeError(f"websocket stopped listending {self.connection}")
+        if self.active:
+            logging.error(f"stopped listening to websocket: {self.connection}")
+            raise RuntimeError(f"websocket stopped listening {self.connection}")
+        else:
+            logging.info("Websocket is not active")
+            await self.close()
 
-            
+
+    async def subscribe(self, websocket, channels):
+        msg = json.dumps(dict(type="subscribe", channels=channels))
+        #msg = f'{{"type":"subscribe","channels":["{channel}"]}}\n'
+        logging.info(f"Sending subscribe to {channels} with msg={msg}")
+        await websocket.send(msg)
+        logging.info(f"Subscribed")
+
+    async def ping_pong(self):
+        if self.connection is None or not self.active:
+            logging.warning(f"Cannot ping_pong an inactive WebSocket")
+            return
+        async with self.connection as websocket:
+            logging.info(f"Sending ping")
+            pong_waiter = await websocket.ping()
+            logging.info(f"Sent ping: {pong_waiter}")
+            await pong_waiter
+            logging.info(f"got pong {pong_waiter}")
+
     def localhost_socket_repeater_callback(self, message):
         to_remove = []
         for writer in self.localhost_connections:
@@ -178,7 +218,7 @@ class WebSocket:
             self.localhost_connections.append(writer)
         else:
             logging.info(f"Requiring authentication for repeat server")
-        while request != "quit":
+        while request != "quit" and self.active:
             if writer.is_closing():
                 logging.info("Dectected closing writer socket")
                 break
@@ -198,7 +238,16 @@ class WebSocket:
                     logging.info("Detected closing of reader socket")
                     break
                 logging.info(f"from localhost socket, got: {request}")
+        if not self.active:
+            logging.info("localhost socket is not active now")
         writer.close()
+
+    @classmethod
+    def disconnect(cls):
+        logging.info("Signaling disconnect")
+        cls.active = False
+        if cls.repeat_server:
+            cls.repeat_server.close()
 
     @classmethod
     async def run_server(cls, *callbacks, **kw_args) -> None:
@@ -221,38 +270,53 @@ class WebSocket:
             kw_args['repeat_server_port'] = None
         
         run_iteration = 0
-        while True:
-            repeat_server = None
+        while cls.active:
+            cls.repeat_server = None
             run_iteration += 1
             try:
                 loop = asyncio.get_running_loop()
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     
-                    websocket = WebSocket()
-                    logging.info(f"Starting new WebSocket {websocket}")
+                    cls.websocket = WebSocket()
+                    logging.info(f"Starting new WebSocket {cls.websocket}")
                     for callback in callbacks:
-                        websocket.register_callback(callback)
-                    websocket.register_callback(websocket.localhost_socket_repeater_callback)
-                    websocket.connect(cls.include_api_key)
+                        cls.websocket.register_callback(callback)
+                    cls.websocket.register_callback(cls.websocket.localhost_socket_repeater_callback)
+                    cls.websocket.connect(cls.include_api_key)
 
-                    fut_notify = websocket.update_by_type(dict(type="websocket_starting",\
+                    fut_notify = cls.websocket.update_by_type(dict(type="websocket_starting",\
                          data=dict(startup_time=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z"),\
                              run_iteration=run_iteration)))
 
-                    task1 = asyncio.create_task(websocket.listen())
+                    
+                    task1 = asyncio.create_task(cls.websocket.listen())
         
                     if kw_args['repeat_server_port'] is not None:
-                        repeat_server = await asyncio.start_server(websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
-                        async with repeat_server:
-                            await asyncio.gather(fut_notify, task1, repeat_server.serve_forever())
+                        cls.repeat_server = await asyncio.start_server(cls.websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
+                        async with cls.repeat_server:
+                            try:
+                                await asyncio.gather(fut_notify, task1, cls.repeat_server.serve_forever())
+                            except concurrent.futures._base.CancelledError:
+                                logging.info("Repeat server was cancelled")
+                                pass
                     else:
                         await asyncio.gather(fut_notify, task1)
 
-                    logging.info(f"Websocket {websocket} exited for some reason.")
+                    logging.info(f"Websocket {cls.websocket} exited for some reason.")
             except:
-                logging.exception(f"Got exception in websocket")
-            logging.info("Continuing after 5 seconds")
-            sleep(5)
-            logging.info('Continuing...')
+                logging.exception(f"Got exception in websocket {cls.websocket}")
+                cls.websocket = None
+                futures = []
+                for callback in callbacks:
+                    fut = callback(dict(type="websocket_exception",\
+                         data=dict(startup_time=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z"))))
+                    futures.append(fut)
+                if len(futures) > 0:
+                    await asyncio.gather(*futures)
+            if cls.active:
+                logging.info("Continuing after 5 seconds")
+                await asyncio.sleep(5)
+                logging.info('Continuing...')
+        logging.info(f"websocket run_server has concluded {cls}")
 
     

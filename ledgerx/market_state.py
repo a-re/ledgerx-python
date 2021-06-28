@@ -1,5 +1,6 @@
 import asyncio
 import concurrent
+from ledgerx.websocket import WebSocket
 import threading
 import logging
 import json
@@ -8,6 +9,7 @@ import ledgerx
 import datetime as dt
 
 from ledgerx.util import unique_values_from_key
+from ledgerx import BitvolCache
 
 class MarketState:
 
@@ -18,13 +20,16 @@ class MarketState:
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
 
     def __init__(self, skip_expired : bool = True):
+        self.is_active = False
         self.last_trade = None
         self.clear()
         self.skip_expired = skip_expired
         self.action_queue = None
+        self.handle_counts = dict()
         
 
     def clear(self):
+        logging.info("clearing market state")
         self.all_contracts = dict()           # dict (contract_id: contract)
         self.traded_contract_ids = dict()     # dict (contract_id: traded-contract)
         self.expired_contracts = dict()       # dict (contract_id: expired-contract)
@@ -392,7 +397,7 @@ class MarketState:
         contract = self.all_contracts[contract_id]
         label = contract['label']
         logging.debug(f"handle_order on {contract_id} {label} {order}")
-        logging.info(f"handle_order on {contract_id} clock={order['clock']} {label} status_type={order['status_type']} mid={order['mid']}")
+        logging.debug(f"handle_order on {contract_id} clock={order['clock']} {label} status_type={order['status_type']} mid={order['mid']}")
   
         # We expect MY orders to come in twice, once with the mpid and once without afterwards
         is_my_order = self.is_my_order(order)
@@ -434,7 +439,7 @@ class MarketState:
                     else:
                         logging.warning(f"Ignoring old order for {contract_id}. contract_clock={contract_clock} vs {order} existing={existing}")
             else:
-                if order_clock <= contract_clock:
+                if contract_clock == 0 or order_clock <= contract_clock:
                     logging.debug(f"Ignoring old queued action contract_clock={contract_clock} {order}")
                 else:
                     logging.warning(f"Queued action is newer than contract_clock={contract_clock} {order}")
@@ -454,10 +459,10 @@ class MarketState:
                 
                 if order['is_ask']:
                     # sold
-                    logging.info(f"Observed sale of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}")
+                    logging.info(f"Observed sale of {delta_pos} for ${delta_basis//10000} on {contract_id} {label} {order}")
                 else:
                     # bought
-                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//100} on {contract_id} {label} {order}/mi")
+                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//10000} on {contract_id} {label} {order}/mi")
 
                 #if 'id' in position:
                 #    size = position['size']
@@ -914,6 +919,16 @@ class MarketState:
                     self.accounts[balance] = dict()
                 self.accounts[balance][asset] = val
 
+    def have_available(self, asset, amount):
+        if 'available_balances' not in self.accounts:
+            logging.warning(f"No available balances in accounts!!")
+            return False
+        avail = self.accounts['available_balances']
+        if avail[asset] >= amount:
+            return True
+        else:
+            return False
+
     async def book_top_action(self, action) -> bool:
         assert(action['type'] == 'book_top')
         contract_id = action['contract_id']
@@ -952,7 +967,8 @@ class MarketState:
         now = dt.datetime.now(tz=self.timezone)
         beat_time = dt.datetime.fromtimestamp(action['timestamp'] // 1000000000, tz=self.timezone)
         delay = (now - beat_time).total_seconds()
-        logging.info(f"Heartbeat delay={delay} {action}")
+        logging.info(f"Heartbeat delay={delay} {action} {self.handle_counts}")
+        self.handle_counts = dict()
         assert(action['type'] == 'heartbeat')
         if self.last_heartbeat is None:
             pass
@@ -1000,11 +1016,16 @@ class MarketState:
         logging.info(f"Done processing {count} queued actions")
             
     async def handle_action(self, action, force_run = False):
-        if self.action_queue is not None and not force_run:
+        type = action['type']
+        if self.action_queue is not None and not force_run and type != 'websocket_starting':
             self.action_queue.append(action)
             logging.info(f"queueing action {action['type']} while updating with {len(self.action_queue)} pending")
             return
-        type = action['type']
+
+        
+        if type not in self.handle_counts:
+            self.handle_counts[type] = 0
+        self.handle_counts[type] += 1
         logging.debug(f"handle_action {type} force_run={force_run}")
         if type == 'book_top':
             await self.book_top_action(action)
@@ -1012,6 +1033,9 @@ class MarketState:
             await self.action_report_action(action)
         elif type == 'heartbeat':
             await self.heartbeat_action(action)
+        elif type == 'bitvol':
+            logging.info(f"bit_vol: {action}")
+            BitvolCache.update_cached_bitvol(action)
         elif type == 'collateral_balance_update':
             self.collateral_balance_action(action)
         elif type == 'open_positions_update':
@@ -1020,7 +1044,11 @@ class MarketState:
             logging.info(f"Exposure report {action}")
         elif type == 'websocket_starting':
             logging.warning(f"Websocket has started {action}, books may be stale and need to be resynced")
+            self.action_queue = [] # ignore any previously queued actions
             await self.load_market()
+        elif type == 'websocket_exception':
+            logging.warning(f"Got exception action, setting inactive until websocket reconnects")
+            self.is_active = False
         elif type == 'contract_added':
             self.contract_added_action(action)
         elif type == 'contract_removed':
@@ -1033,6 +1061,8 @@ class MarketState:
             logging.info(f"conversation change {action}")
         elif '_success' in type:
             logging.info(f"Successful {type}")
+        elif 'subscribe' in type:
+            logging.info(f"Subscription update {action}")
         else:
             logging.warning(f"Unknown action type {type}: {action}")
 
@@ -1076,12 +1106,13 @@ class MarketState:
         logging.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")
         
     def add_transaction(self, transaction):
+        raise # FIXME self.accounts is wrong
         logging.debug(f"transaction {transaction}")
         if transaction['state'] != 'executed':
             logging.warning(f"unknown state for transaction: {transaction}")
             return
         asset = transaction['asset']
-        if asset not in self.accounts:
+        if asset not in self.accounts['available_balances']:
             self.accounts[asset] = {"available_balance": 0, "position_locked_amount": 0, "withdrawal_locked_amount" : 0}
         acct = self.accounts[asset]
         if transaction['debit_post_balance'] is not None:
@@ -1210,8 +1241,10 @@ class MarketState:
         if position is None or 'id' not in position:
             await self.async_update_all_positions()
             position = self.contract_positions[contract_id]
-        self.update_position(contract_id, position, False)
-        await self.async_update_basis(contract_id, position)
+            logging.info(f"updated position for {contract_id} is now {position}")
+        else:
+            self.update_position(contract_id, position, False)
+            await self.async_update_basis(contract_id, position)
 
     def update_position(self, contract_id, position = None, update_basis_too = True):
         logging.info(f"updating position for {contract_id}")
@@ -1275,9 +1308,11 @@ class MarketState:
 
         await self.load_positions_orders_and_books()
 
+        self.is_active = True
         logging.info(f"Done loading the market")
 
     async def load_all_transactions(self):
+        raise # FIXME
         # load transactions for and get account balances
         logging.info("Loading transactions for account balances")
         transactions = ledgerx.Transactions.list_all()
@@ -1488,6 +1523,11 @@ class MarketState:
         if started_queue:
             await self.handle_queued_actions()
 
+    def disconnect(self):
+        logging.info("Disconnecting websocket")
+        self.is_active = False
+        WebSocket.disconnect()
+
     def _run_websocket_server(self, callback, include_api_key, repeat_server_port):
         logging.info("Running websocket server")
         return ledgerx.WebSocket.run_server(callback, include_api_key=include_api_key, repeat_server_port=repeat_server_port)
@@ -1496,7 +1536,9 @@ class MarketState:
         loop = asyncio.get_running_loop()
         task1 = await loop.run_in_executor(executor, self.load_latest_trades)
         task2 = await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port)
-        await asyncio.gather( task1, task2 ) 
+        await asyncio.gather( task1, task2 )
+        logging.info(f"websocket stopped")
+        self.is_active = False
 
     def start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
         logging.info(f"Starting market_state = {self}")

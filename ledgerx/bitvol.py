@@ -102,6 +102,14 @@ class BitvolCache:
     timefmt_ms = "%Y-%m-%dT%H:%M:%S.%f%z"
 
     @classmethod
+    def to_time(cls, then):
+        if '.' in then:
+            then = dt.datetime.strptime(then, cls.timefmt_ms)
+        else:
+            then = dt.datetime.strptime(then, cls.timefmt)
+        return then
+
+    @classmethod
     def get_cached_bitvol(cls, asset, resolution = "1W", timeout = 120):
         """Returns the cached value and None if the cache is empty or out of date"""
         if asset == "CBTC":
@@ -114,14 +122,22 @@ class BitvolCache:
         else:
             logging.info(f"No cache for {key} {cls.cache}")
         if bitvol is not None:
-            then = bitvol['time']
-            if '.' in then:
-                then = dt.datetime.strptime(then, cls.timefmt_ms)
-            else:
-                then = dt.datetime.strptime(then, cls.timefmt)
+            then = cls.to_time(bitvol['time'])
             if (now - then).total_seconds() > timeout:
                 bitvol = None
         return bitvol
+    
+    @classmethod
+    def update_cached_bitvol(cls, ws_data):
+        assert('type' in ws_data and 'asset' in ws_data)
+        if ws_data['value'] is not None and ws_data['time'] is not None:
+            asset = ws_data['asset']
+            now = cls.to_time(ws_data['time'])
+            for key,bitvol in cls.cache.items():
+                if asset in key:
+                    then = cls.to_time(bitvol['time'])
+                    if now > then:
+                        bitvol = ws_data
     
     @classmethod
     def store_cached_results(cls, asset, resolution, bitvol_results):
@@ -129,6 +145,8 @@ class BitvolCache:
         bitvol = None
         if asset == "CBTC":
             asset = "BTC"
+        elif asset == "CETH":
+            asset = "ETH"
         key = "-".join([asset, resolution])
         for result in reversed(bitvol_results['data']):
             # test the result, sometimes a value comes back as None
