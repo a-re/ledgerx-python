@@ -134,12 +134,11 @@ class HttpClient:
                 await asyncio.sleep(delay)
             else:
                 res.raise_for_status()
-                break
-        return res
+                return res
 
     @classmethod
     async def async_post(cls,
-        url: str, data: Dict = {}, include_api_key: bool = False
+        url: str, data: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Execute http post request
 
@@ -153,14 +152,25 @@ class HttpClient:
         """
         aiohttp_session = cls.bootstrap_aiohttp_session()
         headers = gen_headers(include_api_key)
-        res = await aiohttp_session.post(url, headers=headers, json=data)
-        logging.debug(f"post {url} {res}")
-        res.raise_for_status()
-        return res
+        while True:
+            res = await aiohttp_session.post(url, headers=headers, json=data)
+            logging.debug(f"post {url} {res}")
+            if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
+                if delay == DELAY_SECONDS:
+                    delay += 1
+                else:
+                    delay *= 2.0
+                if delay > 10:
+                    delay = 10
+                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                await asyncio.sleep(delay)
+            else:
+                res.raise_for_status()
+                return res
 
     @classmethod
     async def async_delete(cls,
-        url: str, params: Dict = {}, include_api_key: bool = False
+        url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Execute http delete request
 
@@ -174,7 +184,21 @@ class HttpClient:
         """
         aiohttp_session = cls.bootstrap_aiohttp_session()
         headers = gen_headers(include_api_key)
-        res = await aiohttp_session.delete(url, params=params, headers=headers)
-        logging.debug(f"delete {url} {res}")
-        res.raise_for_status()
-        return res
+        while True:
+            res = await aiohttp_session.delete(url, params=params, headers=headers)
+            logging.debug(f"delete {url} {res}")
+            if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
+                if delay == DELAY_SECONDS:
+                    delay += 1
+                else:
+                    delay *= 2.0
+                if delay > 10:
+                    delay = 10
+                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                await asyncio.sleep(delay)
+            else:
+                res.raise_for_status()
+                return res
+
+
+
