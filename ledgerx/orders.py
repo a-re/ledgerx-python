@@ -131,7 +131,7 @@ class Orders:
         try:
             res = await HttpClient.async_delete(url, qps, include_api_key)
         except aiohttp.client_exceptions.ClientResponseError as e:
-            logging.warning(f"Failed to cancel {mid} on {contract_id}... perhaps it no longer exists? res={res} exception={e}")
+            logging.warning(f"Failed to cancel {mid} on {contract_id}... perhaps it no longer exists? exception={e}")
             if e.status == 400:
                 pass
             else:
