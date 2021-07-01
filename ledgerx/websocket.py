@@ -94,6 +94,10 @@ class WebSocket:
             self.update_heartbeat(data)
         elif type == 'action_report':
             logging.debug(f"action report {data}")
+        elif type == 'bitvol':
+            logging.debug(f"bitvol {data}")
+        elif type == 'brave':
+            logging.debug(f"brave: {data}")
         elif type == 'collateral_balance_update':
             logging.debug(f"Collateral balance {data}")
         elif type == 'open_positions_update':
@@ -118,8 +122,6 @@ class WebSocket:
             logging.info(f"subscribed: {data}")
         elif type == 'unsubscribe':
             logging.info(f"unsubscribe: {data}")
-        elif type == 'bitvol':
-            logging.debug(f"bitvol {data}")
         else:
             logging.warn(f"Unknown type '{type}': {data}")
 
@@ -158,7 +160,7 @@ class WebSocket:
         logging.info(f"listening to websocket: {self.connection}")
         async with self.connection as websocket:
             logging.info(f"...{websocket}")
-            await self.subscribe(websocket, ['btc_bitvol', 'eth_bitvol'])
+            await self.subscribe(websocket, ['btc_bitvol', 'eth_bitvol', 'btc_brave', 'eth_brave'])
             await self.consumer_handle(websocket)
         if self.active:
             logging.error(f"stopped listening to websocket: {self.connection}")
