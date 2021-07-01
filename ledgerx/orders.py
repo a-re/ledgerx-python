@@ -91,7 +91,7 @@ class Orders:
             Dict: [description]
         """
         include_api_key = True
-        url = gen_legacy_url(f"/orders/{mid}")
+        url = gen_legacy_url(f"/orders/{mid}/edit")
         qps = dict(contract_id=contract_id, price=price, size=size)
         res = HttpClient.post(url, qps, include_api_key)
         return res.json()
@@ -180,7 +180,7 @@ class Orders:
             Dict: [description]
         """
         include_api_key = True
-        url = gen_legacy_url(f"/orders/{mid}")
+        url = gen_legacy_url(f"/orders/{mid}/edit")
         qps = dict(contract_id=contract_id, price=price, size=size)
         res = await HttpClient.async_post(url, qps, include_api_key)
         return await res.json()
