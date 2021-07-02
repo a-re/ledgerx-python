@@ -133,11 +133,13 @@ class BitvolCache:
         if ws_data['value'] is not None and ws_data['time'] is not None:
             asset = ws_data['asset']
             now = cls.to_time(ws_data['time'])
-            for key,bitvol in cls.cache.items():
+            keys = cls.cache.keys()
+            for key in keys:
                 if asset in key:
+                    bitvol = cls.cache[key]
                     then = cls.to_time(bitvol['time'])
                     if now > then:
-                        bitvol = ws_data
+                        cls.cache[key] = ws_data
     
     @classmethod
     def store_cached_results(cls, asset, resolution, bitvol_results):
