@@ -69,7 +69,7 @@ class Orders:
         """
         include_api_key = True
         url = gen_legacy_url(f"/orders")
-        qps = dict(order_type=order_type, contract_id=contract_id, is_ask='true' if is_ask else 'false', swap_purpose=swap_purpose, size=size, price=price, volatile='true' if volatile else 'false')
+        qps = dict(order_type=order_type, contract_id=contract_id, is_ask='true' if is_ask else 'false', swap_purpose=swap_purpose, size=size, price=price, volatile=True if volatile else False)
         res = HttpClient.post(url, qps, include_api_key)
         return res.json()
 
