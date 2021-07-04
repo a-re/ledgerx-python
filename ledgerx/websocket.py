@@ -24,9 +24,22 @@ class WebSocket:
     repeat_server = None
 
     def __init__(self):
+        self.connection = None
+        self.consume_task = None
         self.clear()
+        logging.info(f"Constructed new WebSocket {self}")
+
+    def __del__(self):
+        try:
+            self.clear()
+        except:
+            logging.exception(f"websocket teardown threw an exception!")
+        finally:
+            logging.info(f"Destroyed Websocket {self}")
 
     def clear(self):
+        if self.connection is not None:
+            logging.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}")
         self.connection = None
         self.update_callbacks = list()
         #self.run_id = None
@@ -37,7 +50,7 @@ class WebSocket:
             try:
                 conn.close()
             except:
-                logging.exception(f"Could not close {conn}")
+                logging.exception(f"Could not close localhost connection: {conn}")
         self.localhost_connections = []
 
     def register_callback(self, callback):
@@ -52,6 +65,10 @@ class WebSocket:
     def deregister_callback(self, callback):
         self.update_callbacks.remove(callback)
         logging.info(f"Deregistered callback {callback}, now there are {len(self.update_callbacks)}")
+
+    def clear_callbacks(self):
+        logging.info(f"Clearing all callbacks on {self}")
+        self.update_callbacks = list()
         
     def connect(self, include_api_key : bool = False) -> websockets.client.WebSocketClientProtocol:
         websocket_resource_url = gen_websocket_url(include_api_key)
@@ -77,13 +94,15 @@ class WebSocket:
             self.heartbeat = data
         else:
             if self.heartbeat['ticks'] + 1 != data['ticks']:
+                if self.heartbeat['ticks'] == data['ticks']:
+                    self.warning(f"Detected duplicate heartbeat {self} {self.heartbeat} {data}")
                 diff = data['ticks'] - self.heartbeat['ticks'] - 1
                 if diff >= 5:
-                    logging.warn(f"Missed {diff} heartbeats {self.heartbeat} vs {data}")
+                    logging.warn(f"Missed {diff} heartbeats {self.heartbeat} vs {data} {self}")
                 else:
                     logging.debug(f"Missed {diff} heartbeats {self.heartbeat} vs {data}")
             if self.heartbeat['run_id'] != data['run_id']:
-                logging.warn("Detected a restart!")
+                logging.warn("Detected a restart! {self}")
             self.heartbeat = data
 
     async def update_by_type(self, data):
@@ -138,7 +157,7 @@ class WebSocket:
         logging.info(f"consumer_handle starting: {websocket}")
         async for message in websocket:
             if not WebSocket.active:
-                logging.info(f"WebSocket is no longer active")
+                logging.info(f"WebSocket {self} is no longer active")
                 return
             logging.debug(f"Received: {message}")
             data = json.loads(message)
@@ -150,23 +169,29 @@ class WebSocket:
             else:
                 logging.warn(f"Got unexpected message: {message}")
             if self.connection is None:
-                logging.info("Connection is gone")
+                logging.info(f"Connection is gone {self}")
                 break
+            if not self.active:
+                logging.info(f"No longer active {self}")
+                return
         if self.connection is not None:
-            logging.error(f"consumer_handle exited: websocket={websocket} connection={self.connection}")
+            logging.error(f"consumer_handle exited: {self} websocket={websocket} conn={self.connection}")
             raise RuntimeError(f"websocket connection exited but it is not None {self.connection}")
 
     async def listen(self):
-        logging.info(f"listening to websocket: {self.connection}")
+        logging.info(f"listening to websocket: {self} conn={self.connection}")
         async with self.connection as websocket:
-            logging.info(f"...{websocket}")
+            logging.info(f"...{self} conn={websocket}")
             await self.subscribe(websocket, ['btc_bitvol', 'eth_bitvol', 'btc_brave', 'eth_brave'])
-            await self.consumer_handle(websocket)
+            self.consume_task = asyncio.ensure_future( self.consumer_handle(websocket) )
+            await self.consume_task
+            self.consume_task = None
+            logging.info(f"Finished consume_task!")
         if self.active:
-            logging.error(f"stopped listening to websocket: {self.connection}")
-            raise RuntimeError(f"websocket stopped listening {self.connection}")
+            logging.error(f"stopped listening to websocket: {self} conn={self.connection}")
+            raise RuntimeError(f"websocket stopped listening {self} conn={self.connection}")
         else:
-            logging.info("Websocket is not active")
+            logging.info(f"Websocket is not active {self} conn={self.connection}")
             await self.close()
 
 
@@ -182,11 +207,13 @@ class WebSocket:
             logging.warning(f"Cannot ping_pong an inactive WebSocket")
             return
         async with self.connection as websocket:
-            logging.info(f"Sending ping")
+            start = dt.datetime.now()
+            logging.debug(f"Sending ping")
             pong_waiter = await websocket.ping()
-            logging.info(f"Sent ping: {pong_waiter}")
+            logging.debug(f"Sent ping: {pong_waiter}")
             await pong_waiter
-            logging.info(f"got pong {pong_waiter}")
+            latency = (dt.datetime.now() - start).total_seconds()
+            logging.info(f"got pong back in {latency} s on {self}")
 
     def localhost_socket_repeater_callback(self, message):
         to_remove = []
@@ -249,7 +276,13 @@ class WebSocket:
         logging.info("Signaling disconnect")
         cls.active = False
         if cls.repeat_server:
+            logging.info("Closing repeat server")
             cls.repeat_server.close()
+        if cls.websocket is not None and cls.websocket.consume_task is not None:
+            logging.info(f"Cancelling consume task")
+            cls.websocket.consume_task.cancel()
+            logging.info(f"Cancelled consume task")
+        logging.info("finished signalling disconnect")
 
     @classmethod
     async def run_server(cls, *callbacks, **kw_args) -> None:
@@ -276,37 +309,41 @@ class WebSocket:
             cls.repeat_server = None
             run_iteration += 1
             try:
-                loop = asyncio.get_running_loop()
-                with concurrent.futures.ThreadPoolExecutor() as pool:
                     
-                    cls.websocket = WebSocket()
-                    logging.info(f"Starting new WebSocket {cls.websocket}")
-                    for callback in callbacks:
-                        cls.websocket.register_callback(callback)
+                if cls.websocket is not None:
+                    logging.warning(f"Detected an existing websocket already! {cls.websocket}")
+                    break
+                cls.websocket = WebSocket()
+                logging.info(f"Starting new WebSocket {cls.websocket}")
+                for callback in callbacks:
+                    cls.websocket.register_callback(callback)
+                if kw_args['repeat_server_port'] is not None:
                     cls.websocket.register_callback(cls.websocket.localhost_socket_repeater_callback)
-                    cls.websocket.connect(cls.include_api_key)
+                cls.websocket.connect(cls.include_api_key)
 
-                    fut_notify = cls.websocket.update_by_type(dict(type="websocket_starting",\
-                         data=dict(startup_time=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z"),\
-                             run_iteration=run_iteration)))
+                fut_notify = cls.websocket.update_by_type(dict(type="websocket_starting",\
+                        data=dict(startup_time=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z"),\
+                            run_iteration=run_iteration)))
 
-                    
-                    task1 = asyncio.create_task(cls.websocket.listen())
-        
-                    if kw_args['repeat_server_port'] is not None:
-                        cls.repeat_server = await asyncio.start_server(cls.websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
-                        async with cls.repeat_server:
-                            try:
-                                await asyncio.gather(fut_notify, task1, cls.repeat_server.serve_forever())
-                            except concurrent.futures._base.CancelledError:
-                                logging.info("Repeat server was cancelled")
-                                pass
-                    else:
-                        await asyncio.gather(fut_notify, task1)
+                
+                task1 = asyncio.create_task(cls.websocket.listen())
+    
+                if kw_args['repeat_server_port'] is not None:
+                    cls.repeat_server = await asyncio.start_server(cls.websocket.handle_localhost_socket, 'localhost',  kw_args['repeat_server_port'])
+                    async with cls.repeat_server:
+                        try:
+                            await asyncio.gather(fut_notify, task1, cls.repeat_server.serve_forever())
+                        except concurrent.futures._base.CancelledError:
+                            logging.info("Repeat server was cancelled")
+                            pass
+                else:
+                    await asyncio.gather(fut_notify, task1)
 
-                    logging.info(f"Websocket {cls.websocket} exited for some reason.")
+                logging.info(f"Websocket {cls.websocket} exited for some reason.")
             except:
                 logging.exception(f"Got exception in websocket {cls.websocket}")
+                if cls.websocket is not None:
+                    cls.websocket.clear_callbacks()
                 cls.websocket = None
                 futures = []
                 for callback in callbacks:

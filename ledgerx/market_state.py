@@ -35,7 +35,10 @@ class MarketState:
         self.skip_expired = skip_expired
         self.action_queue = None
         self.handle_counts = dict()
+        logging.info(f"MarketState constructed {self}")
         
+    def __del__(self):
+        logging.info(f"MarketState destructor {self}")
 
     def clear(self):
         logging.info("clearing market state")
@@ -1032,6 +1035,7 @@ class MarketState:
                     logging.debug(f"Ignored stale book top {action} kept newer {top}")
                 return False
 
+    irregular_count = 0
     async def heartbeat_action(self, action):
         now = dt.datetime.now(tz=self.timezone)
         beat_time = dt.datetime.fromtimestamp(action['timestamp'] // 1000000000, tz=self.timezone)
@@ -1044,6 +1048,8 @@ class MarketState:
         else:
             if self.last_heartbeat['ticks'] >= action['ticks']:
                 logging.warning(f"Out of order heartbeats last={self.last_heartbeat} now={action}")
+                self.irregular_count += 1
+                raise Exception("Irregular heartbeat")
             if self.last_heartbeat['run_id'] != action['run_id']:
                 logging.warning("Reloading market state after new run_id new={action} old={self.last_heartbeat}")
                 await self.load_market()
@@ -1107,7 +1113,7 @@ class MarketState:
             logging.debug(f"bit_vol: {action}")
             BitvolCache.update_cached_bitvol(action)
         elif type == 'brave':
-            logging.info(f"brave: {action}")
+            logging.debug(f"brave: {action}")
             self.brave[action['asset']] = action
         elif type == 'collateral_balance_update':
             self.collateral_balance_action(action)
@@ -1561,7 +1567,7 @@ class MarketState:
                 if contract_id in self.contract_clock:
                     contract_clock = self.contract_clock[contract_id]
                 if (not has_book_states) or book_top_clock is None or contract_clock is None or book_top_clock > contract_clock:
-                    logging.info(f"Detected stale book_state vs book_top {contract_id} has_states={has_book_states} top={book_top_clock} books={contract_clock}")
+                    logging.debug(f"Detected potentially stale book_state vs book_top {contract_id} has_states={has_book_states} top={book_top_clock} books={contract_clock}")
                     to_update[contract_id] = contract_clock
                     count = count + 1
                     if max > 0 and count >= max:
@@ -1570,7 +1576,7 @@ class MarketState:
             # compare with stale set from last heartbeat to avoid excessive book loading of recent book_tops that will shortly be in the websocket stream
             union_to_update = set()
             if len(to_update) > 0:
-                logging.info(f"There are {len(to_update)} potentially stale books {to_update}")
+                logging.debug(f"There are {len(to_update)} potentially stale books {to_update}")
                 for contract_id,contract_clock in to_update.items():
                     if contract_clock is None or (contract_id in self.stale_books and self.stale_books[contract_id] == contract_clock):
                         logging.info(f"books are definitely stale {contract_id}={contract_clock} stale_books={self.stale_books}")
@@ -1601,16 +1607,26 @@ class MarketState:
         logging.info("Running websocket server")
         return ledgerx.WebSocket.run_server(callback, include_api_key=include_api_key, repeat_server_port=repeat_server_port)
 
-    async def __start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
+    async def async_start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None, bot_runner=None):
         loop = asyncio.get_running_loop()
         task1 = await loop.run_in_executor(executor, self.load_latest_trades)
+        logging.info(f"Loading latest trades in {task1}")
         task2 = await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port)
-        await asyncio.gather( task1, task2 )
-        logging.info(f"websocket stopped")
+        logging.info(f"Starting websocket in {task2}")
+        task3 = None
+        if bot_runner is not None:
+            task3 = await loop.run_in_executor(executor, bot_runner.run)
+            logging.info(f"Started bot_runner {bot_runner} in {task3}")
+        await asyncio.gather( task1, task2, task3 )
+        logging.info(f"websocket finished")
         self.is_active = False
 
     def start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
         logging.info(f"Starting market_state = {self}")
         
         loop = asyncio.get_event_loop()
-        threading.Thread(target=loop.run_until_complete, args=(self.__start_websocket_and_run(executor, include_api_key, repeat_server_port),)).start()
+        thread = threading.Thread(target=loop.run_until_complete, args=(self.async_start_websocket_and_run(executor, include_api_key, repeat_server_port),))
+        thread.daemon = True
+        thread.start()
+        return thread
+
