@@ -114,6 +114,8 @@ class BitvolCache:
         """Returns the cached value and None if the cache is empty or out of date"""
         if asset == "CBTC":
             asset = "BTC"
+        if asset == "USD":
+            raise RuntimeError("No bit vol for USD")
         bitvol = None
         key = "-".join([asset, resolution])
         now = dt.datetime.now(cls.timezone)
