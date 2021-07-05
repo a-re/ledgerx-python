@@ -604,6 +604,7 @@ class MarketState:
         return book_top
 
     def check_book_top(self, new_book_top):
+        matches = True
         contract_id = new_book_top['contract_id']
         clock = new_book_top['clock']
         # check the contract clock updated with book_states and orders that should >= to any websocket book_top or synthetic book_top
@@ -611,6 +612,7 @@ class MarketState:
             contract_clock = self.contract_clock[contract_id]
             if contract_clock < clock:
                 logging.warning(f"contract {contract_id} contract_clock={contract_clock} is {clock-contract_clock} OLDER than new_book_top={new_book_top}")
+                matches = False
         old_book_top = None
         if contract_id in self.book_top:
             old_book_top = self.book_top[contract_id]
@@ -626,7 +628,6 @@ class MarketState:
             book_top = old_book_top
         elif old_book_top['clock'] == clock:
             book_top = old_book_top
-            matches = True
             nask = new_book_top['ask']
             oask = old_book_top['ask']
             if MarketState.is_same_0_or_None(nask,oask):
@@ -644,7 +645,7 @@ class MarketState:
             else:
                 logging.debug(f"book_top matches book_state clock {self.book_top[contract_id]}")
         logging.debug(f"Top for {contract_id} {book_top}")
-        return book_top
+        return book_top, matches
         
     def handle_book_state(self, contract_id, book_state):
         """{clock": 57906, "entry_id": "81d87376167f400fb6545234600856b2", "is_ask": true, "price": 884000, "size": 1}"""
@@ -679,7 +680,10 @@ class MarketState:
             self.handle_book_state(contract_id, state)
         book_top = self.get_top_from_book_state(contract_id)
         self.contract_clock[contract_id] = book_top['clock']
-        self.check_book_top(book_top)
+        good_book_top, matches = self.check_book_top(book_top)
+        if not matches:
+            logging.warning(f"Reloading book states as the calculated book_top {book_top} != good_book_top {good_book_top}")
+            del self.book_states[contract_id] # signal to load books in next heartbeat
     
         
     def get_top_book_states(self, contract_id, clock_lag = 0):
