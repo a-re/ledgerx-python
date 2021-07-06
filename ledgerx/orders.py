@@ -43,13 +43,14 @@ class Orders:
         qps = dict(contract_id=contract_id)
         try:
             res = HttpClient.delete(url, qps, include_api_key)
+            return res.json()
         except requests.HTTPError as e:
             logging.warning(f"Could not cancel {mid} on {contract_id}. {e}")
             if e.status_code == 400:
                 pass
             else:
                 raise
-        return res.json()
+        return None
 
     @classmethod
     def create(cls, contract_id: int, is_ask: bool, size: int, price: int, volatile: bool = False, order_type: str = 'limit', swap_purpose: str = 'undisclosed') -> Dict:
@@ -130,13 +131,15 @@ class Orders:
         qps = dict(contract_id=contract_id)
         try:
             res = await HttpClient.async_delete(url, qps, include_api_key)
+            return await res.json()
         except aiohttp.client_exceptions.ClientResponseError as e:
             logging.warning(f"Failed to cancel {mid} on {contract_id}... perhaps it no longer exists? exception={e}")
             if e.status == 400:
                 pass
             else:
                 raise
-        return await res.json()
+        return None
+        
 
     @classmethod
     async def async_create(cls, contract_id: int, is_ask: bool, size: int, price: int, volatile: bool = False, order_type: str = 'limit', swap_purpose: str = 'undisclosed') -> Dict:
