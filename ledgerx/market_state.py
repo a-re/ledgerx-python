@@ -118,6 +118,12 @@ class MarketState:
             return int(brave['price'] * self.conv_usd)
         return None
     
+    def get_my_position(self, contract_id):
+        if contract_id not in self.contract_positions:
+            return None
+        position = self.contract_positions[contract_id]
+        return position['size']
+
     def cost_to_close(self, contract_id):
         "returns dict(low, high, net, basis, cost, ask, bid, size)"
         logging.debug(f"getting cost to close for {contract_id}")
@@ -1033,14 +1039,21 @@ class MarketState:
                     self.accounts[balance] = dict()
                 self.accounts[balance][asset] = val
 
-    def have_available(self, asset, amount):
+    def get_available(self, asset):
         if 'available_balances' not in self.accounts:
             logging.warning(f"No available balances in accounts!!")
-            return False
+            return None
         avail = self.accounts['available_balances']
-        test = avail[asset] / self.asset_units[asset]
-        logging.info(f"Testing for availability of {amount} in {asset}: test={test} {avail[asset]}")
-        if test >= amount:
+        if asset not in avail:
+            return None
+        return avail[asset] / self.asset_units[asset]
+
+    def have_available(self, asset, amount):
+        avail = self.get_available(asset)
+        if avail is None:
+            return False
+        logging.info(f"Testing for availability of {amount} in {asset}: {avail}")
+        if avail >= amount:
             return True
         else:
             return False
