@@ -527,13 +527,14 @@ class MarketState:
                
                 delta_pos = order['filled_size']
                 delta_basis = order['filled_size'] * order['filled_price']
+                divisor = contract['multiplier'] * MarketState.conv_usd
                 
                 if order['is_ask']:
                     # sold
-                    logging.info(f"Observed sale of {delta_pos} for ${delta_basis//10000} on {contract_id} {label} {order}")
+                    logging.info(f"Observed sale of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
                 else:
                     # bought
-                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//10000} on {contract_id} {label} {order}/mi")
+                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}/mi")
 
                 #if 'id' in position:
                 #    size = position['size']
