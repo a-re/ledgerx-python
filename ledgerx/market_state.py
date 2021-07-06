@@ -35,6 +35,7 @@ class MarketState:
         self.skip_expired = skip_expired
         self.action_queue = None
         self.handle_counts = dict()
+        self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
         logging.info(f"MarketState constructed {self}")
         
     def __del__(self):
@@ -64,8 +65,7 @@ class MarketState:
         self.label_to_contract_id = dict()    # dict(contract['label']: contract_id)
         self.put_call_map = dict()            # dict(contract_id: contract_id) put -> call and call -> put
         self.costs_to_close = dict()          # dict(contract_id: dict(net, cost, basis, size, bid, ask, low, high))
-        self.next_day_contracts = dict()      # dict(asset: next_day_contract)
-        self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
+        self.next_day_contracts = dict()      # dict(asset: next_day_contract)                
         self.skip_expired = True              # if expired contracts should be ignored (for positions and cost-basis)
         self.last_heartbeat = None            # the last heartbeat - to detect restarts and network issue
         self.mpid = None                      # the trader id
@@ -568,7 +568,7 @@ class MarketState:
 
         return True
 
-    def get_top_from_book_state(self, contract_id):
+    def get_top_from_book_state(self, contract_id:int, exclude_self:bool = False):
         if contract_id not in self.book_states:
             logging.info(f"need books for {contract_id}")
             return None
@@ -587,6 +587,8 @@ class MarketState:
                 clock = book['clock']
             if mid == 'last_delete_clock':
                 continue
+            if exclude_self and mid in self.my_orders:
+                continue
             assert(mid == book['mid'])
             is_ask = book['is_ask']
             price = book['price']
@@ -599,9 +601,47 @@ class MarketState:
                     bid = price
                     best_bid = book
 
-        book_top = dict(ask= ask, bid= bid, contract_id= contract_id, contract_type= None, clock=clock, type= 'book_top', synthetic=True)
+        book_top = dict(ask=ask, bid=bid, contract_id=contract_id, contract_type= None, clock=clock, type='book_top', synthetic=True)
         logging.debug(f"best_ask={best_ask} best_bid={best_bid}")
         return book_top
+
+    def get_bottom_from_book_states(self, contract_id:int, exclude_self:bool = False):
+        if contract_id not in self.book_states:
+            logging.info(f"need books for {contract_id}")
+            return None
+        books = self.book_states[contract_id]
+        ask = None
+        bid = None
+        if contract_id not in self.all_contracts:
+            self.retrieve_contract(contract_id)
+        contract = self.all_contracts[contract_id]
+        logging.debug(f"get_bottom_from_book_state contract_id {contract_id} contract {contract} books {books}")
+        clock = -1
+        worst_ask = None
+        worst_bid = None
+        for mid,book in books.items():
+            if clock < book['clock']:
+                clock = book['clock']
+            if mid == 'last_delete_clock':
+                continue
+            if exclude_self and mid in self.my_orders:
+                continue
+            assert(mid == book['mid'])
+            is_ask = book['is_ask']
+            price = book['price']
+            if is_ask:
+                if ask is None or ask < price:
+                    ask = price
+                    worst_ask = book
+            else:
+                if bid is None or bid > price:
+                    bid = price
+                    worst_bid = book
+
+        book_bottom = dict(ask=ask, bid=bid, contract_id=contract_id, contract_type=None, clock=clock, type='book_bottom', synthetic=True)
+        logging.debug(f"best_ask={worst_ask} best_bid={worst_bid}")
+        return book_bottom
+
 
     def check_book_top(self, new_book_top):
         matches = True
