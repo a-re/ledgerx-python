@@ -122,6 +122,8 @@ class MarketState:
         if contract_id not in self.contract_positions:
             return None
         position = self.contract_positions[contract_id]
+        if 'id' not in position or 'basis' not in position:
+            self.to_update_basis[contract_id] = position
         return position['size']
 
     def cost_to_close(self, contract_id):
@@ -494,9 +496,11 @@ class MarketState:
 
         if contract_clock + 1 != order_clock:
             if contract_clock < order_clock:
-                logging.warning(f"Reloading books for stale state on {contract_id}. contract_clock={contract_clock} vs {order}")
-                await self.async_load_books(contract_id)
-                contract_clock = self.contract_clock[contract_id]
+                if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
+                    logging.warning(f"Reloading books for stale state on {contract_id}. contract_clock={contract_clock} vs {order}")
+                    await self.async_load_books(contract_id)
+                    if self.contract_clock[contract_id] != -2:
+                        contract_clock = self.contract_clock[contract_id]
 
         if contract_clock + 1 != order_clock:
             if self.action_queue is None:
@@ -720,13 +724,13 @@ class MarketState:
         contract_id = book_states['contract_id']
         if contract_id not in self.all_contracts:
             self.retrieve_contract(contract_id)
-        logging.info(f"Replacing all books for {contract_id}: {self.all_contracts[contract_id]['label']} with {len(book_states['book_states'])} entries")
         # replace any existing states
         self.book_states[contract_id] = dict()
         for state in book_states['book_states']:
             self.handle_book_state(contract_id, state)
         book_top = self.get_top_from_book_state(contract_id)
         self.contract_clock[contract_id] = book_top['clock']
+        logging.info(f"Replaced all books for {contract_id}: {self.all_contracts[contract_id]['label']} clock={self.contract_clock[contract_id]} with {len(book_states['book_states'])} entries top={book_top}")
         good_book_top, matches = self.check_book_top(book_top)
         if not matches:
             logging.warning(f"Reloading book states as the calculated book_top {book_top} != good_book_top {good_book_top}")
@@ -794,6 +798,8 @@ class MarketState:
             logging.info(f"Skiping book loading on expired contract {contract}")
             return
 
+        # signal that book_states are presently being retrieved
+        self.contract_clock[contract_id] = -2
         try:
             book_states = ledgerx.BookStates.get_book_states(contract_id)
             self.handle_all_book_states(book_states)
@@ -810,6 +816,10 @@ class MarketState:
             logging.info(f"Skiping book loading on expired contract {contract}")
             return
 
+        if contract_id in self.contract_clock and self.contract_clock[contract_id] == -2:
+            # some other sync or async instance is already getting the book states
+            return
+        self.contract_clock[contract_id] = -2
         try:
             is_queue_start = self.start_action_queue()
             book_states = await ledgerx.BookStates.async_get_book_states(contract_id)
@@ -827,8 +837,9 @@ class MarketState:
         futures = []
         for contract_id in contracts:
             logging.info(f"loading books for {contract_id}")
-            fut = self.async_load_books(contract_id)
-            futures.append( fut )
+            if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
+                fut = self.async_load_books(contract_id)
+                futures.append( fut )
         if len(futures) > 0:
             await asyncio.gather( *futures )
         logging.info(f"Done loading all books")
@@ -845,6 +856,7 @@ class MarketState:
         if asset in self.next_day_contracts:
             next_day_contract = self.next_day_contracts[asset]
             if self.contract_is_expired(next_day_contract, 1):
+                logging.info(f"Contract is expired or will soon expire {next_day_contract}")
                 next_day_contract = None
             if next_day_contract is not None and not self.contract_is_live(next_day_contract):
                 next_day_contract = None
@@ -995,7 +1007,9 @@ class MarketState:
                 contract_position = self.contract_positions[contract_id]
                 if 'mpid' in contract_position:
                     assert(position['mpid'] == contract_position['mpid'])
-                if position['size'] != contract_position['size']:
+                if 'id' not in contract_position:
+                    update_all.append(contract_id)
+                elif position['size'] != contract_position['size'] or 'basis' not in contract_position:
                     update_basis.append(contract_id)
                 for field in ['exercised_size', 'size']:
                     contract_position[field] = position[field]
@@ -1069,8 +1083,8 @@ class MarketState:
         if contract_id not in self.all_contracts:
             logging.warning(f"loading contract for book_top {contract_id} {action}")
             await self.async_retrieve_contract(contract_id)
-            await self.async_load_books(contract_id)
-            logging.info(f"ignoring possible stale book top {action}")
+            if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
+                await self.async_load_books(contract_id)
             return False
         else:
             if contract_id not in self.book_top:
@@ -1595,6 +1609,14 @@ class MarketState:
         # called every heartbeat
         futures = []
         count = 0
+        # check all cached positions for the id field (from LX) and basis field (from MarketState)
+        for contract_id,pos in self.contract_positions.items():
+            if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
+                continue
+            contract = self.all_contracts[contract_id]
+            if not self.contract_is_expired(contract) and contract_id not in self.to_update_basis and ('id' not in pos or 'basis' not in pos):
+                logging.info(f"Updating position with incomplete state {pos}")
+                self.to_update_basis[contract_id] = pos
         to_update = list(self.to_update_basis.items())
         for contract_id,pos in to_update:
             logging.info(f"requested update basis on {contract_id} {pos}")
@@ -1647,7 +1669,8 @@ class MarketState:
                 logging.warning(f"Reloading {len(union_to_update)} doubly stale books {union_to_update}")
                 started_queue = self.start_action_queue()
                 for contract_id in union_to_update:
-                    futures.append(self.async_load_books(contract_id))
+                    if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
+                        futures.append(self.async_load_books(contract_id))
 
         if len(futures) > 0:
             await asyncio.gather( *futures )
