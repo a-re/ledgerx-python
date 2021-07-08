@@ -45,10 +45,11 @@ class Orders:
             res = HttpClient.delete(url, qps, include_api_key)
             return res.json()
         except requests.HTTPError as e:
-            logging.warning(f"Could not cancel {mid} on {contract_id}. {e}")
-            if e.status_code == 400:
+            if e.response.status_code == 400:
+                logging.info(f"Looks like {mid} is already cancelled: {e}")
                 pass
             else:
+                logging.exception(f"Could not cancel {mid} on {contract_id}. {e}")
                 raise
         return None
 
@@ -133,10 +134,11 @@ class Orders:
             res = await HttpClient.async_delete(url, qps, include_api_key)
             return await res.json()
         except aiohttp.client_exceptions.ClientResponseError as e:
-            logging.warning(f"Failed to cancel {mid} on {contract_id}... perhaps it no longer exists? exception={e}")
             if e.status == 400:
+                logging.info(f"Looks like {mid} is already cancelled: {e}")
                 pass
             else:
+                logging.exception(f"Failed to cancel {mid} on {contract_id}... perhaps it no longer exists? exception={e}")
                 raise
         return None
         
