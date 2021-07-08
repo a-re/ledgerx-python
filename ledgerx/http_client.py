@@ -43,6 +43,8 @@ class HttpClient:
                 logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
+                if res.status_code != 200:
+                    logging.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 break
         return res
@@ -63,6 +65,8 @@ class HttpClient:
         """
         headers = gen_headers(include_api_key)
         res = requests.post(url, headers=headers, json=data)
+        if res.status_code != 200:
+            logging.warning(f"res={res} url={url} json={data}")
         logging.debug(f"post {url} {res}")
         res.raise_for_status()
         return res
@@ -83,6 +87,8 @@ class HttpClient:
         """
         headers = gen_headers(include_api_key)
         res = requests.delete(url, params=params, headers=headers)
+        if res.status_code != 200:
+            logging.warning(f"res={res} url={url} params={params}")
         logging.debug(f"delete {url} {res}")
         res.raise_for_status()
         return res
@@ -133,6 +139,8 @@ class HttpClient:
                 logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
+                if res.status != 200:
+                    logging.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 return res
 
@@ -165,6 +173,8 @@ class HttpClient:
                 logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
+                if res.status != 200:
+                    logging.warning(f"res={res} url={url} data={data}")
                 res.raise_for_status()
                 return res
 
@@ -197,6 +207,8 @@ class HttpClient:
                 logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
+                if res.status != 200:
+                    logging.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 return res
 
