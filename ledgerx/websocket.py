@@ -95,7 +95,7 @@ class WebSocket:
         else:
             if self.heartbeat['ticks'] + 1 != data['ticks']:
                 if self.heartbeat['ticks'] == data['ticks']:
-                    self.warning(f"Detected duplicate heartbeat {self} {self.heartbeat} {data}")
+                    logging.warning(f"Detected duplicate heartbeat {self} {self.heartbeat} {data}")
                 diff = data['ticks'] - self.heartbeat['ticks'] - 1
                 if diff >= 5:
                     logging.warn(f"Missed {diff} heartbeats {self.heartbeat} vs {data} {self}")
