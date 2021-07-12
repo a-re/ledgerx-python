@@ -51,7 +51,7 @@ class MarketState:
         self.exp_dates = list()               # sorted list of all expiration dates in the market
         self.exp_strikes = dict()             # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
         self.my_orders = set()                # just the mids of my orders
-        self.my_cancelled_orders = set()       # track the cancels since status 203/201 come in pairs some times with the same mid
+        self.my_cancelled_orders = set()      # track the cancels since status 203/201 come in pairs some times with the same mid
         self.contract_clock = dict()          # The last clock for a given contract
                                               # An Action Report should only be applied if its Monotonic Clock is equal to current_clock + 1. 
                                               # Old messages can safely be ignored.
@@ -102,6 +102,30 @@ class MarketState:
             logging.warning(f"No books for {contract_id}")
             return None
         return self.book_top[contract_id]
+
+    def next_best_book(self, contract_id:int, tgt_price:int, is_ask:bool, can_be_my_order:bool=False):
+        """Gets the best book entry offer which is worse than the tgt_price"""
+        books = self.get_book_state(contract_id)
+        best = None
+        if books is not None:
+            for mid,book in books.items():
+                if 'is_ask' not in book:
+                    logging.debug(f"Got erroneous book {mid}={book} contract={contract_id}") # normal delete_clock entry
+                    continue
+                if book['is_ask'] != is_ask:
+                    continue
+                if not can_be_my_order and self.is_my_order(book):
+                    continue
+                book_price = book['price']
+                if is_ask:
+                    if book_price > tgt_price: # worse ask is higher price
+                        if best is None or book_price < best['price']: # better ask is lower price
+                            best = book
+                else:
+                    if book_price < tgt_price: # worse bid is lower price
+                        if best is None or book_price > best['price']: # better bid is higher price
+                            best = book
+        return best
 
     def get_brave(self, asset):
         if asset == "CBTC":
@@ -206,9 +230,9 @@ class MarketState:
             return False
 
     @staticmethod
-    def fee(price, size, price_units = 100):
+    def fee(price, size):
         # $0.15 per contract or 20% of price whichever is less
-        fee_per_contract = price // (5 * price_units) # 20%
+        fee_per_contract = price // (5 * MarketState.conv_usd) # 20%
         if fee_per_contract >= 15:
             fee_per_contract = 15
         return abs(size) * fee_per_contract
@@ -220,6 +244,23 @@ class MarketState:
             contract_a['date_expires'] == contract_b['date_expires'] and \
             contract_a['derivative_type'] == contract_b['derivative_type'] and \
             contract_a['underlying_asset'] == contract_b['underlying_asset']
+
+    @staticmethod
+    def get_expire_t(contract:dict, now:dt.datetime=None):
+        assert('date_expires' in contract)
+        if now is None:
+            now = dt.datetime.now(MarketState.timezone)
+        exp_str = contract['date_expires']
+        exp = dt.datetime.strptime(exp_str, MarketState.strptime_format)
+        t_sec = (exp - now).total_seconds()
+        t = t_sec / MarketState.seconds_per_year
+        return t  
+
+    def get_contract(self, contract_id):
+        if contract_id not in self.all_contracts:
+            contract = self.retrieve_contract(contract_id)
+            self.all_contracts[contract_id] = contract
+        return self.all_contracts[contract_id]
 
     def contract_is_expired(self, contract, preemptive_seconds = 15):
         if 'date_expires' not in contract:
@@ -333,7 +374,7 @@ class MarketState:
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
         if is_it:
             if order['mid'] not in self.my_orders:
-                logging.info(f"Newly added my order {order['mid']} {order}")
+                logging.debug(f"Newly added my order {order['mid']} {order}")
             self.my_orders.add(order['mid'])
         if not is_it and (order['mid'] in self.my_orders or order['mid'] in self.my_cancelled_orders):
             is_it = True
@@ -487,12 +528,14 @@ class MarketState:
         else:
             contract_clock = self.contract_clock[contract_id]
 
+        logging.info(f"order: {contract_id} clock={order_clock} c_clock={contract_clock} status={status} is_my_order={is_my_order}/{'mpid' in order} mid={mid}")
+        
         if order_clock <= contract_clock and is_my_order and 'mpid' not in order:
-            logging.info(f"Skipping old and duplicate instance of MY order {mid}")
+            logging.info(f"Skipping old and duplicate instance of MY order {mid} status={status}")
             return False
         
         if is_my_order:
-            logging.info(f"handling my order {order}")
+            logging.info(f"handling my order {mid} status={status}")
 
         if contract_clock + 1 != order_clock:
             if contract_clock < order_clock:
@@ -575,7 +618,9 @@ class MarketState:
             logging.warning(f"Unhandled status_type {status} on {label} {existing} {order}")
         
         new_top = self.get_top_from_book_state(contract_id)
-        self.check_book_top(new_top)
+        dummy,matches = self.check_book_top(new_top)
+        if not matches:
+            logging.info(f"this order does not match current booktop existing={dummy} order={order} new_top={new_top}")
 
         return True
 
@@ -670,7 +715,7 @@ class MarketState:
         if old_book_top is None or old_book_top['clock'] < clock:
             if old_book_top is not None:
                 diff = clock - old_book_top['clock']
-                logging.info(f"new_book_top is newer than existing book_top by {diff} new_book_top={new_book_top} old_book_top={old_book_top}")
+                logging.debug(f"new_book_top is newer than existing book_top by {diff} new_book_top={new_book_top} old_book_top={old_book_top}")
             logging.debug(f"Setting book_top {new_book_top}")
             book_top = self.book_top[contract_id] = new_book_top
         elif old_book_top['clock'] > clock:
@@ -1001,8 +1046,13 @@ class MarketState:
         assert('positions' in action)
         update_basis = []
         update_all = []
+        futures = []
         for position in action['positions']:
             contract_id = position['contract_id']
+            if len(self.all_contracts) > 2 and contract_id not in self.all_contracts:
+                logging.info(f"Loading a unknown contract {contract_id}")
+                fut = self.async_retrieve_contract(contract_id)
+                futures.append(fut)
             if contract_id in self.contract_positions:
                 contract_position = self.contract_positions[contract_id]
                 if 'mpid' in contract_position:
@@ -1017,7 +1067,7 @@ class MarketState:
                 self.contract_positions[contract_id] = position
                 update_all.append(contract_id)
                 logging.info(f"No position for {contract_id}")
-        futures = []
+
         if len(update_all) > 0:
             logging.info(f"Getting new positions for at least these new contracts {update_all}")
             needs_all = False
@@ -1060,6 +1110,7 @@ class MarketState:
             return None
         avail = self.accounts['available_balances']
         if asset not in avail:
+            logging.warning(f"No {asset} in balances {self.accounts}")
             return None
         return avail[asset] / self.asset_units[asset]
 
@@ -1067,7 +1118,7 @@ class MarketState:
         avail = self.get_available(asset)
         if avail is None:
             return False
-        logging.info(f"Testing for availability of {amount} in {asset}: {avail}")
+        logging.debug(f"Testing for availability of {amount} in {asset}: {avail}")
         if avail >= amount:
             return True
         else:
