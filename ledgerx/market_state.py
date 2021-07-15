@@ -70,6 +70,7 @@ class MarketState:
         self.last_heartbeat = None            # the last heartbeat - to detect restarts and network issue
         self.mpid = None                      # the trader id
         self.cid = None                       # the customer/account id
+        self.my_out_of_order_orders = dict()  # *sometimes* my orders (with mpid) comes before the others, stash it for later here
 
     def mid(self, bid, ask):
         if bid is None and ask is None:
@@ -205,6 +206,13 @@ class MarketState:
         ret = dict(net=net, cost=cost, basis=basis, size=size, bid=bid, ask=ask, fee=fee, low=low, high=high)
         self.costs_to_close[contract_id] = ret
         return ret
+
+    @staticmethod
+    def clean_price(price):
+        # Transform price (in pennies) into whole dollars (in pennies)
+        if price is None:
+            return price
+        return int( int(price) // 100 ) * 100   
 
     @staticmethod
     def ask(top_book):
@@ -521,6 +529,32 @@ class MarketState:
 
         status = order['status_type']
         order_clock = order['clock']
+
+        # Check for any stashed out-of-order orders
+        if is_my_order and contract_id in self.my_out_of_order_orders:
+            oooo = self.my_out_of_order_orders[contract_id]
+            assert(len(oooo) > 0)
+            first = oooo[0]
+            if first['clock'] < order_clock:
+                logging.info(f"Still catching up to first out-of-order order: {first}")
+            elif first['clock'] == order_clock:
+                assert('mpid' in first)
+                if 'mpid' in order:
+                    logging.warning(f"Got DUPLICATE my order with mpid?? first={first} order={order}")
+                assert(first['status_type'] == status)
+                assert(first['mid'] == mid)
+                # use and consume the stashed order, drop this duplicate
+                order = first
+                oooo.pop(0)
+                if len(oooo) == 0:
+                    del self.my_out_of_order_orders[contract_id]
+            else:
+                logging.warning(f"Stashed order is also out-of-order. Forcing reload of books")
+                del self.my_out_of_order_orders[contract_id]
+                await self.async_load_books(contract_id)
+                if self.contract_clock[contract_id] != -2:
+                    contract_clock = self.contract_clock[contract_id]
+                
         # check and/or set the clocks for this order
         if contract_id not in self.contract_clock:
             logging.info(f"No clock for {contract_id} yet")
@@ -540,6 +574,15 @@ class MarketState:
         if contract_clock + 1 != order_clock:
             if contract_clock < order_clock:
                 if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
+                    if is_my_order and 'mpid' in order:
+                        # potentially my out of order order, stash it away to be retrieved soon
+                        if contract_id in self.my_out_of_order_orders:
+                            self.my_out_of_order_orders[contract_id] = list()
+                        oooo = self.my_out_of_order_orders[contract_id]
+                        if len(oooo) == 0 or oooo[-1]['clock'] < order_clock:
+                            oooo.append(order)
+                            logging.info(f"Stashed to out-of-order queue ({len(oooo)}) MY order {order} and waiting for the stream to catch up")
+                            return False                    
                     logging.warning(f"Reloading books for stale state on {contract_id}. contract_clock={contract_clock} vs {order}")
                     await self.async_load_books(contract_id)
                     if self.contract_clock[contract_id] != -2:
