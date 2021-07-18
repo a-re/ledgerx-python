@@ -291,7 +291,7 @@ class MarketState:
 
     def contract_label(self, contract_id):
         if contract_id in self.all_contracts:
-            return self.all_contracts[contract_id]['label']
+            return f"{contract_id}-{self.all_contracts[contract_id]['label']}"
         return None
 
     def get_filtered_contracts(self, **kwargs):
@@ -535,21 +535,27 @@ class MarketState:
             oooo = self.my_out_of_order_orders[contract_id]
             assert(len(oooo) > 0)
             first = oooo[0]
+            stashed_is_okay = True
             if first['clock'] < order_clock:
                 logging.info(f"Still catching up to first out-of-order order: {first}")
             elif first['clock'] == order_clock:
                 assert('mpid' in first)
                 if 'mpid' in order:
                     logging.warning(f"Got DUPLICATE my order with mpid?? first={first} order={order}")
-                assert(first['status_type'] == status)
-                assert(first['mid'] == mid)
-                # use and consume the stashed order, drop this duplicate
-                order = first
-                oooo.pop(0)
-                if len(oooo) == 0:
-                    del self.my_out_of_order_orders[contract_id]
+                if first['status_type'] != status or first['mid'] != mid:
+                    logging.warning(f"Mismatch in status_type or mid in out-of-order stash")
+                    stashed_is_okay = False
+                else:
+                    # use and consume the stashed order, drop this duplicate
+                    order = first
+                    oooo.pop(0)
+                    if len(oooo) == 0:
+                        del self.my_out_of_order_orders[contract_id]
             else:
-                logging.warning(f"Stashed order is also out-of-order. Forcing reload of books")
+                logging.warning(f"Stashed order is also out-of-order.")
+                stashed_is_okay = False
+            if not stashed_is_okay:
+                logging.warning(f"Forcing reload of books for {contract_id} at clock={order_clock} order={order}, oooo={oooo}")
                 del self.my_out_of_order_orders[contract_id]
                 await self.async_load_books(contract_id)
                 if self.contract_clock[contract_id] != -2:
@@ -576,7 +582,7 @@ class MarketState:
                 if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
                     if is_my_order and 'mpid' in order:
                         # potentially my out of order order, stash it away to be retrieved soon
-                        if contract_id in self.my_out_of_order_orders:
+                        if contract_id not in self.my_out_of_order_orders:
                             self.my_out_of_order_orders[contract_id] = list()
                         oooo = self.my_out_of_order_orders[contract_id]
                         if len(oooo) == 0 or oooo[-1]['clock'] < order_clock:
@@ -1346,8 +1352,7 @@ class MarketState:
                 contract = self.retrieve_contract(contract_id)
                 
             self.traded_contract_ids[contract_id] = self.all_contracts[contract_id]
-            contract_label = self.all_contracts[contract_id]["label"]
-            logging.debug(f"Traded {contract_id} {contract_label}")
+            logging.debug(f"Traded {self.contract_label(contract_id)}")
         logging.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")
         
     def add_transaction(self, transaction):
@@ -1417,8 +1422,7 @@ class MarketState:
 
     def process_basis_trades(self, contract, position, trades):
         contract_id = contract['id']
-        contract_label = contract['label']
-        logging.info(f"got {len(trades)} trades for {contract_id} {contract_label}")
+        logging.info(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
         pos = 0
         basis = 0
         for trade in trades:
@@ -1449,7 +1453,7 @@ class MarketState:
         if contract_id in self.to_update_basis:
             del self.to_update_basis[contract_id]
 
-        logging.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC ${cost} -- {contract_id} {contract_label}")
+        logging.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC ${cost} -- {self.contract_label(contract_id)}")
         
 
     async def async_update_all_positions(self):
@@ -1796,12 +1800,11 @@ class MarketState:
         logging.info(f"websocket finished")
         self.is_active = False
 
-    def start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
-        logging.info(f"Starting market_state = {self}")
-        
-        loop = asyncio.get_event_loop()
-        thread = threading.Thread(target=loop.run_until_complete, args=(self.async_start_websocket_and_run(executor, include_api_key, repeat_server_port),))
-        thread.daemon = True
-        thread.start()
-        return thread
+#    def start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None):
+#        logging.info(f"Starting market_state = {self}")        
+#        loop = asyncio.get_event_loop()
+#        thread = threading.Thread(target=loop.run_until_complete, args=(self.async_start_websocket_and_run(executor, include_api_key, repeat_server_port),))
+#        thread.daemon = True
+#        thread.start()
+#        return thread
 
