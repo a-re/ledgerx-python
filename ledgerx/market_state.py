@@ -158,6 +158,7 @@ class MarketState:
         if contract_id not in self.contract_positions:
             return None
         contract = self.all_contracts[contract_id]
+        multiplier = contract['multiplier']
         if self.contract_is_expired(contract):
             return None
         position = self.contract_positions[contract_id]
@@ -175,15 +176,15 @@ class MarketState:
         cost = None
         if mid is not None:
             fee = MarketState.fee(mid, size)
-            cost = (fee + mid * size) // 10000
+            cost = (fee + mid * size / multiplier) // MarketState.conv_usd
         basis = None
         net = None
         if 'basis' in position:
-            basis = position['basis'] // 100
+            basis = position['basis'] // MarketState.conv_usd # position[basis] is in usd_units
             if size < 0 and ask is not None:
-                net = int((fee + ask * size) // 10000 - basis)
+                net = int((fee + ask * size / multiplier) // MarketState.conv_usd - basis)
             elif bid is not None:
-                net = int((fee + bid * size) // 10000 - basis)
+                net = int((fee + bid * size / multiplier) // MarketState.conv_usd - basis)
         if basis is not None:
             if contract_id not in self.costs_to_close or cost != self.costs_to_close[contract_id]['cost']:
                 logging.debug(f"net ${net}: cost ${cost} - basis ${basis} to close {size} of {self.all_contracts[contract_id]['label']} at {bid} to {ask}")
@@ -195,15 +196,15 @@ class MarketState:
         high = None
         if size < 0:
             if bid is not None:
-                low = (fee + bid * size) // 10000
+                low = (fee + bid * size / multiplier) // MarketState.conv_usd
             if ask is not None:
-                high = (fee + ask * size) // 10000
+                high = (fee + ask * size / multiplier) // MarketState.conv_usd
         else:
             if ask is not None:
-                low = (fee + ask * size) // 10000
+                low = (fee + ask * size / multiplier) // MarketState.conv_usd
             if bid is not None:
-                high= (fee + bid * size) // 10000
-        ret = dict(net=net, cost=cost, basis=basis, size=size, bid=bid, ask=ask, fee=fee, low=low, high=high)
+                high = (fee + bid * size / multiplier) // MarketState.conv_usd
+        ret = dict(net=net, cost=cost, basis=basis, size=size, bid=bid, ask=ask, fee=fee, low=low, high=high) # cost and basis are in $ not usd_units
         self.costs_to_close[contract_id] = ret
         return ret
 
@@ -1437,7 +1438,7 @@ class MarketState:
                 # sold, so negative basis and negative position delta
                 basis += trade["fee"] - trade["rebate"] - trade["premium"]
                 pos -= trade["filled_size"]
-        #logging.debug(f"final pos {pos} basis {basis} position {position}")
+        logging.debug(f"final pos {pos} basis {basis} position {position}")
         if position["type"] == "short":
             assert(pos <= 0)
         else:
@@ -1447,8 +1448,8 @@ class MarketState:
             logging.warning(f"update to position did not yield pos={pos} {position}, updating them all")
             self.update_all_positions()
             return
-        position["basis"] = basis
-        cost = basis / 100.0
+        position['basis'] = basis # basis is in usd_units
+        cost = basis / MarketState.conv_usd
         self.contract_positions[contract_id] = position
         if contract_id in self.to_update_basis:
             del self.to_update_basis[contract_id]
@@ -1612,7 +1613,7 @@ class MarketState:
                 continue
             cost = None
             if 'basis' in position:
-                cost = position['basis'] / 100.0
+                cost = position['basis'] / MarketState.conv_usd # position['basis'] is in usd units
             logging.info(f"{label} {position['size']} {cost}")
 
         self.net_cost_to_close_all()
@@ -1625,11 +1626,13 @@ class MarketState:
         for contract_id, position in self.contract_positions.items():
             if self.skip_expired and contract_id not in self.all_contracts:
                 continue
-            label = self.all_contracts[contract_id]['label']
+            contract = self.all_contracts[contract_id]
+            label = contract['label']
+            multiplier = contract['multiplier']
             basis = None
             size = position['size']
             if 'basis' in position:
-                basis = position['basis']
+                basis = position['basis'] # position[basis] is in usd_units
                 total_net_basis += basis
             top = self.get_book_top(contract_id)
             if top is not None:
@@ -1638,9 +1641,9 @@ class MarketState:
                     bid = MarketState.bid(top)
                     if bid is not None:
                         fee = MarketState.fee(bid,size)
-                        sale = (size * bid - fee) // 10000
+                        sale = (size * bid / multiplier - fee) // MarketState.conv_usd
                         total_net_close += sale
-                        logging.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//100} with basis ${basis//100}, net ${(sale - basis//100)//1}")
+                        logging.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(sale - basis//MarketState.conv_usd)//1}")
                     else:
                         logging.info(f"No bid buyers for {size} of {label}")
                 elif size < 0:
@@ -1648,12 +1651,12 @@ class MarketState:
                     ask = MarketState.ask(top)
                     if ask is not None:
                         fee = MarketState.fee(ask,size)
-                        purchase = (size * ask + fee) // 10000
+                        purchase = (size * ask / multiplier + fee) // MarketState.conv_usd
                         total_net_close += purchase
-                        logging.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//100} with basis ${basis//100}, net ${(purchase - basis/100)//1}")
+                        logging.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(purchase - basis/MarketState.conv_usd)//1}")
                     else:
                         logging.info(f"No ask sellers for {size} of {label}")
-        logging.info(f"Net to close ${total_net_close} with basis ${total_net_basis//100} = ${total_net_close - total_net_basis//100} to close all positions at best (top) price.  Did not explore all books for size")
+        logging.info(f"Net to close ${total_net_close} with basis ${total_net_basis//MarketState.conv_usd} = ${total_net_close - total_net_basis//MarketState.conv_usd} to close all positions at best (top) price.  Did not explore all books for size")
 
     def handle_trade(self, action_report):
         logging.debug(f"looking if last trade is {action_report}")
