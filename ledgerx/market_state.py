@@ -957,7 +957,7 @@ class MarketState:
                 next_day_contract = None
         if next_day_contract is None:
             # get the newest one
-            logging.info("Discovering the latest NextDay swap contract")
+            logging.info("Discovering the latest NextDay swap contract") # FIXME to detect next day when it becomes active
             contracts = self.all_contracts.values()
             if self.last_contracts_scan is None or (dt.datetime.now() - self.last_contracts_scan).total_seconds() > 600:
                 contracts = ledgerx.Contracts.list_all(dict(derivative_type='day_ahead_swap',active=True))
@@ -1067,6 +1067,7 @@ class MarketState:
             return ""
 
     def contract_added_action(self, action):
+        logging.info(f"contract added {action}")
         assert(action['type'] == 'contract_added')
         contract_id = action['data']['id']
         self.retrieve_contract(contract_id, True)
@@ -1083,6 +1084,7 @@ class MarketState:
         self.expired_contracts[contract_id] = contract
 
     def contract_removed_action(self, action):
+        logging.info(f"contract removed {action}")
         assert(action['type'] == 'contract_removed')
         self.remove_contract(action['data'])
             
@@ -1097,6 +1099,9 @@ class MarketState:
         update_basis = []
         update_all = []
         futures = []
+        if 'positions' not in action or len(action['positions']) == 0:
+            logging.warning(f"Got EMPTY open_positions_report")
+            return
         for position in action['positions']:
             contract_id = position['contract_id']
             if len(self.all_contracts) > 2 and contract_id not in self.all_contracts:
@@ -1155,6 +1160,7 @@ class MarketState:
                 self.accounts[balance][asset] = val
 
     def get_available(self, asset):
+        """available balance in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         if 'available_balances' not in self.accounts:
             logging.warning(f"No available balances in accounts!!")
             return None

@@ -51,7 +51,7 @@ class HttpClient:
 
     @staticmethod
     def post(
-        url: str, data: Dict = {}, include_api_key: bool = False
+        url: str, data: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Execute http post request
 
@@ -63,17 +63,31 @@ class HttpClient:
         Returns:
             requests.Response: [description]
         """
+        delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
-        res = requests.post(url, headers=headers, json=data)
-        if res.status_code != 200:
-            logging.warning(f"res={res} url={url} json={data}")
-        logging.debug(f"post {url} {res}")
-        res.raise_for_status()
+        res = None
+        while True:
+            res = requests.post(url, headers=headers, json=data)
+            if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
+                if delay == DELAY_SECONDS:
+                    delay += 1
+                else:
+                    delay *= 2.0
+                if delay > 10:
+                    delay = 10
+                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                sleep(delay)
+            else:
+                if res.status_code != 200:
+                    logging.warning(f"res={res} url={url} json={data}")
+                logging.debug(f"post {url} {res}")
+                res.raise_for_status()
+                break
         return res
 
     @staticmethod
     def delete(
-        url: str, params: Dict = {}, include_api_key: bool = False
+        url: str, params: Dict = {}, include_api_key: bool = False, NO_RETRY_429_ERRORS: bool = False
     ) -> requests.Response:
         """Execute http delete request
 
@@ -85,12 +99,25 @@ class HttpClient:
         Returns:
             [type]: [description]
         """
+        delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
-        res = requests.delete(url, params=params, headers=headers)
-        if res.status_code != 200:
-            logging.warning(f"res={res} url={url} params={params}")
-        logging.debug(f"delete {url} {res}")
-        res.raise_for_status()
+        res = None
+        while True:
+            res = requests.delete(url, params=params, headers=headers)
+            if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
+                if delay == DELAY_SECONDS:
+                    delay += 1
+                else:
+                    delay *= 2.0
+                if delay > 10:
+                    delay = 10
+                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                sleep(delay)
+            else:
+                if res.status_code != 200:
+                    logging.warning(f"res={res} url={url} params={params}")
+                logging.debug(f"delete {url} {res}")
+                res.raise_for_status()
         return res
 
     aiohttp_session = None
@@ -159,6 +186,7 @@ class HttpClient:
             requests.Response: [description]
         """
         aiohttp_session = cls.bootstrap_aiohttp_session()
+        delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
         while True:
             res = await aiohttp_session.post(url, headers=headers, json=data)
@@ -193,6 +221,7 @@ class HttpClient:
             [type]: [description]
         """
         aiohttp_session = cls.bootstrap_aiohttp_session()
+        delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
         while True:
             res = await aiohttp_session.delete(url, params=params, headers=headers)
