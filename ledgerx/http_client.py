@@ -103,7 +103,8 @@ class HttpClient:
         headers = gen_headers(include_api_key)
         res = None
         while True:
-            res = requests.delete(url, params=params, headers=headers)
+            logging.info(f"Executing delete url={url} params={params}")
+            res = requests.delete(url, headers=headers, params=params)
             if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
                     delay += 1
@@ -118,6 +119,7 @@ class HttpClient:
                     logging.warning(f"res={res} url={url} params={params}")
                 logging.debug(f"delete {url} {res}")
                 res.raise_for_status()
+                break
         return res
 
     aiohttp_session = None
