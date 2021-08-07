@@ -548,12 +548,15 @@ class MarketState:
                     stashed_is_okay = False
                 else:
                     # use and consume the stashed order, drop this duplicate
+                    logging.info(f"Consuming out-of-order {first} dropping {order}")
                     order = first
                     oooo.pop(0)
                     if len(oooo) == 0:
                         del self.my_out_of_order_orders[contract_id]
+            elif order_clock == first['clock'] + 1 and status == 201:
+                logging.info(f"Stashing/ignoring second half of filled out-of-order order={order}")
             else:
-                logging.warning(f"Stashed order is also out-of-order.")
+                logging.warning(f"Stashed order is also out-of-order. order_clock={order_clock} first={first} order={order}")
                 stashed_is_okay = False
             if not stashed_is_okay:
                 logging.warning(f"Forcing reload of books for {contract_id} at clock={order_clock} order={order}, oooo={oooo}")
@@ -631,7 +634,7 @@ class MarketState:
                     logging.info(f"Observed sale of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
                 else:
                     # bought
-                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}/mi")
+                    logging.info(f"Observed purchase of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
 
                 #if 'id' in position:
                 #    size = position['size']
@@ -884,6 +887,30 @@ class MarketState:
                 top_book_states[1]['size']=1
         return top_book_states
 
+    def get_market_book_order_price(self, contract_id:int, is_ask=bool, size=1, margin=0):
+        """Returns the market price for an is_ask order to trade size contracts which are currently on the books"""
+        if contract_id in self.book_states:
+            books = self.book_states[contract_id]
+            offers = []
+            for mid,book_state in books.items():
+                if mid == 'last_delete_clock':
+                    continue
+                if book_state['is_ask'] != is_ask:
+                    # opposite side
+                    offers.append(book_state)
+            offers.sort(key=lambda x:x['price']) # order lowest first
+            if is_ask:
+                # this is a sell order, so sort highest bids first
+                offers.reverse()
+                # and lower price by the margin
+                margin = - margin
+            for offer in offers:
+                if size > offer['size']:
+                    size -= offer['size']
+                else:
+                    return offer['price'] + margin
+        return None
+
     def load_books(self, contract_id):
         logging.info(f"Loading books for {contract_id}")
         if contract_id not in self.all_contracts:
@@ -943,23 +970,24 @@ class MarketState:
     last_contracts_scan = None
     def get_next_day_swap(self, asset):
         next_day_contract = None
-        if asset not in self.next_day_contracts:
+        if asset not in self.next_day_contracts or self.contract_is_expired(self.next_day_contracts[asset]):
+            if asset in self.next_day_contracts:
+                del self.next_day_contracts[asset]
             for contract_id, contract in self.all_contracts.items():
                 if contract['is_next_day'] and asset == contract['underlying_asset'] and not self.contract_is_expired(contract) and self.contract_is_live(contract):
                     self.next_day_contracts[asset] = contract
                     break
         if asset in self.next_day_contracts:
             next_day_contract = self.next_day_contracts[asset]
-            if self.contract_is_expired(next_day_contract, 1):
-                logging.info(f"Contract is expired or will soon expire {next_day_contract}")
+            if self.contract_is_expired(next_day_contract, 1) or not self.contract_is_live(next_day_contract):
+                logging.info(f"Contract is not yet active or will expire soon expire {next_day_contract}")
                 next_day_contract = None
-            if next_day_contract is not None and not self.contract_is_live(next_day_contract):
-                next_day_contract = None
+                del self.next_day_contracts[asset]
         if next_day_contract is None:
             # get the newest one
             logging.info("Discovering the latest NextDay swap contract") # FIXME to detect next day when it becomes active
             contracts = self.all_contracts.values()
-            if self.last_contracts_scan is None or (dt.datetime.now() - self.last_contracts_scan).total_seconds() > 600:
+            if self.last_contracts_scan is None or (dt.datetime.now() - self.last_contracts_scan).total_seconds() > 90:
                 contracts = ledgerx.Contracts.list_all(dict(derivative_type='day_ahead_swap',active=True))
                 logging.info(f"Got {contracts}")
                 self.last_contracts_scan = dt.datetime.now()
@@ -967,7 +995,7 @@ class MarketState:
                 contract_id = c['id']
                 if contract_id not in self.all_contracts:
                     self.add_contract(c)
-                if c['is_next_day'] and c['active'] and not self.contract_is_expired(c) and self.contract_is_live(c):
+                if c['is_next_day'] and not self.contract_is_expired(c) and self.contract_is_live(c):
                     self.next_day_contracts[c['underlying_asset']] = c
                     if asset == c['underlying_asset']:
                         next_day_contract = c
@@ -1141,7 +1169,7 @@ class MarketState:
             logging.info(f"Getting updated basis for these contracts {update_basis}")
             
             for contract_id in update_basis:
-                future = self.async_update_position(contract_id)
+                future = self.async_update_position(contract_id, self.contract_positions[contract_id])
                 futures.append(future)
 
         if len(futures) > 0:
