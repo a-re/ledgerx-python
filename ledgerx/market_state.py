@@ -31,11 +31,15 @@ class MarketState:
     def __init__(self, skip_expired : bool = True):
         self.is_active = False
         self.last_trade = None
-        self.clear()
+        self.accounts = dict()                # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
+        self.my_cancelled_orders = set()      # track every mid every created by me. Tracks the cancels since status 203/201 come in pairs some times with the same mid
+        self.mpid = None                      # the trader id
+        self.cid = None                       # the customer/account id
         self.skip_expired = skip_expired
         self.action_queue = None
         self.handle_counts = dict()
         self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
+        self.clear()
         logging.info(f"MarketState constructed {self}")
         
     def __del__(self):
@@ -47,11 +51,9 @@ class MarketState:
         self.traded_contract_ids = dict()     # dict (contract_id: traded-contract)
         self.expired_contracts = dict()       # dict (contract_id: expired-contract)
         self.contract_positions = dict()      # my positions by contract (no lots) dict(contract_id: position)
-        self.accounts = dict()                # dict(asset: dict(available_balance: 0, position_locked_amount: 0, ...))
         self.exp_dates = list()               # sorted list of all expiration dates in the market
         self.exp_strikes = dict()             # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
         self.my_orders = set()                # just the mids of my orders
-        self.my_cancelled_orders = set()      # track the cancels since status 203/201 come in pairs some times with the same mid
         self.contract_clock = dict()          # The last clock for a given contract
                                               # An Action Report should only be applied if its Monotonic Clock is equal to current_clock + 1. 
                                               # Old messages can safely be ignored.
@@ -68,8 +70,6 @@ class MarketState:
         self.next_day_contracts = dict()      # dict(asset: next_day_contract)                
         self.skip_expired = True              # if expired contracts should be ignored (for positions and cost-basis)
         self.last_heartbeat = None            # the last heartbeat - to detect restarts and network issue
-        self.mpid = None                      # the trader id
-        self.cid = None                       # the customer/account id
         self.my_out_of_order_orders = dict()  # *sometimes* my orders (with mpid) comes before the others, stash it for later here
 
     def mid(self, bid, ask):
@@ -381,11 +381,16 @@ class MarketState:
         if self.mpid is None:
             return False
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
+        mid = order['mid']
         if is_it:
-            if order['mid'] not in self.my_orders:
-                logging.debug(f"Newly added my order {order['mid']} {order}")
-            self.my_orders.add(order['mid'])
-        if not is_it and (order['mid'] in self.my_orders or order['mid'] in self.my_cancelled_orders):
+            status = None if 'status_type' not in order else order['status_type']
+            if (status == 200 or status == 201 or status == 204) and mid not in self.my_orders:
+                logging.info(f"recording {mid} as MY order")
+                self.my_orders.add(mid)
+            elif mid not in self.my_cancelled_orders:
+                logging.info(f"recording {mid} as MY cancelled order")
+                self.my_cancelled_orders.add(mid)
+        if not is_it and (mid in self.my_orders or mid in self.my_cancelled_orders):
             is_it = True
         return is_it
 
@@ -409,8 +414,6 @@ class MarketState:
         label = self.all_contracts[contract_id]['label']
         book_order = dict(contract_id=contract_id, price=order['price'], size=order['size'], is_ask=order['is_ask'], clock=order['clock'], mid=mid)
         is_my_order = self.is_my_order(order)
-        if mid in self.my_cancelled_orders:
-            self.my_cancelled_orders.remove(mid)
         if is_my_order and self.mpid is not None and 'mpid' not in book_order:
             book_order['mpid'] = self.mpid
         if is_my_order and mid not in self.my_orders:
@@ -453,8 +456,6 @@ class MarketState:
         # remove order if books_state is now 0
         logging.debug(f"replacing order {order}")
         mid = order['mid']
-        if mid in self.my_cancelled_orders:
-            self.my_cancelled_orders.remove(mid)
         contract_id = order['contract_id']
         book_state = self.get_book_state(contract_id)
         exists = mid in book_state
@@ -504,7 +505,7 @@ class MarketState:
 
 
     # returns True for a unique report, False for a dup to be ignored
-    async def handle_order(self, order) -> bool:
+    async def handle_order(self, order, ignore_out_of_order:bool = False) -> bool:
         contract_id = order['contract_id']
 
         # update the contract if needed
@@ -516,7 +517,7 @@ class MarketState:
         #logging.info(f"handle_order on {contract_id} {label} {order}")
         logging.debug(f"handle_order on {contract_id} clock={order['clock']} {label} status_type={order['status_type']} mid={order['mid']}")
   
-        # We expect MY orders to come in twice, once with the mpid and once without afterwards
+        # We expect MY orders to come in twice, once with the mpid and once without usually afterwards, but sometimes before
         is_my_order = self.is_my_order(order)
         mid = order['mid'] 
         book_state = self.get_book_state(contract_id)
@@ -532,32 +533,45 @@ class MarketState:
         order_clock = order['clock']
 
         # Check for any stashed out-of-order orders
-        if is_my_order and contract_id in self.my_out_of_order_orders:
+        if is_my_order and contract_id in self.my_out_of_order_orders and not ignore_out_of_order:
             oooo = self.my_out_of_order_orders[contract_id]
             assert(len(oooo) > 0)
             first = oooo[0]
+            last = oooo[-1]
             stashed_is_okay = True
+            replay_all = False
             if first['clock'] < order_clock:
-                logging.info(f"Still catching up to first out-of-order order: {first}")
+                if order_clock - first['clock'] > 10:
+                    logging.warning(f"Replaying {len(oooo)} out-of-order entries and forcing a reload order={order_clock} vs first={first['clock']}")
+                    replay_all = True
+                    stashed_is_okay = False
+                else:
+                    logging.info(f"Still catching up to first out-of-order order: order_clock={order_clock} {first}")
             elif first['clock'] == order_clock:
                 assert('mpid' in first)
                 if 'mpid' in order:
                     logging.warning(f"Got DUPLICATE my order with mpid?? first={first} order={order}")
                 if first['status_type'] != status or first['mid'] != mid:
-                    logging.warning(f"Mismatch in status_type or mid in out-of-order stash")
+                    logging.warning(f"Mismatch in status_type or mid in out-of-order stash first={first} order={order}")
                     stashed_is_okay = False
                 else:
-                    # use and consume the stashed order, drop this duplicate
-                    logging.info(f"Consuming out-of-order {first} dropping {order}")
-                    order = first
-                    oooo.pop(0)
-                    if len(oooo) == 0:
-                        del self.my_out_of_order_orders[contract_id]
-            elif order_clock == first['clock'] + 1 and status == 201:
-                logging.info(f"Stashing/ignoring second half of filled out-of-order order={order}")
+                    replay_all = True
+            elif last['clock'] == order_clock + 1:
+                logging.info("Stashing the next out-of-order last={last} next={order}")
+                oooo.append(order)
+                return False
             else:
-                logging.warning(f"Stashed order is also out-of-order. order_clock={order_clock} first={first} order={order}")
+                logging.warning(f"Stashed order is also out-of-order {len(oooo)}. order_clock={order_clock} first={first} last={last} order={order}")
+                replay_all = True
                 stashed_is_okay = False
+            if replay_all:
+                # replay and consume the stashed orders, then process this duplicate
+                logging.warning(f"Replaying {len(oooo)} out-of-order orders: {oooo}")
+                # first delete the oooo queue
+                del self.my_out_of_order_orders[contract_id]
+                for replay in oooo:
+                    await self.handle_action(replay, True)
+                logging.info(f"Finished replaying out-of-order orders, this too should be duplicate that is ignored {order}")
             if not stashed_is_okay:
                 logging.warning(f"Forcing reload of books for {contract_id} at clock={order_clock} order={order}, oooo={oooo}")
                 del self.my_out_of_order_orders[contract_id]
@@ -591,8 +605,8 @@ class MarketState:
                         oooo = self.my_out_of_order_orders[contract_id]
                         if len(oooo) == 0 or oooo[-1]['clock'] < order_clock:
                             oooo.append(order)
-                            logging.info(f"Stashed to out-of-order queue ({len(oooo)}) MY order {order} and waiting for the stream to catch up")
-                            return False                    
+                            logging.info(f"Stashed to out-of-order queue ({len(oooo)}) MY order last_clock={oooo[-1]['clock']} {order} and waiting for the stream to catch up")
+                            return False    
                     logging.warning(f"Reloading books for stale state on {contract_id}. contract_clock={contract_clock} vs {order}")
                     await self.async_load_books(contract_id)
                     if self.contract_clock[contract_id] != -2:
@@ -1128,7 +1142,7 @@ class MarketState:
         update_all = []
         futures = []
         if 'positions' not in action or len(action['positions']) == 0:
-            logging.warning(f"Got EMPTY open_positions_report")
+            logging.info(f"Got EMPTY open_positions_report")
             return
         for position in action['positions']:
             contract_id = position['contract_id']
@@ -1271,10 +1285,10 @@ class MarketState:
                 await self.load_remaining_books()
 
     # returns True for a unique report, False for a duplicate
-    async def action_report_action(self, action) -> bool:
+    async def action_report_action(self, action, ignore_out_of_order:bool = False) -> bool:
         logging.debug(f"ActionReport {action}")
         assert(action['type'] == 'action_report')
-        return await self.handle_order(action)
+        return await self.handle_order(action, ignore_out_of_order)
 
     def start_action_queue(self):
         # returns true if it is not already started
@@ -1298,7 +1312,7 @@ class MarketState:
             self.action_queue = None
         logging.info(f"Done processing {count} queued actions")
             
-    async def handle_action(self, action, force_run = False):
+    async def handle_action(self, action, force_run:bool = False):
         type = action['type']
         if self.action_queue is not None and not force_run and type != 'websocket_starting':
             self.action_queue.append(action)
@@ -1313,7 +1327,7 @@ class MarketState:
         if type == 'book_top':
             await self.book_top_action(action)
         elif type == 'action_report':
-            await self.action_report_action(action)
+            await self.action_report_action(action, force_run)
         elif type == 'heartbeat':
             await self.heartbeat_action(action)
         elif type == 'bitvol':
@@ -1794,7 +1808,7 @@ class MarketState:
                 logging.debug(f"There are {len(to_update)} potentially stale books {to_update}")
                 for contract_id,contract_clock in to_update.items():
                     if contract_clock is None or (contract_id in self.stale_books and self.stale_books[contract_id] == contract_clock):
-                        logging.info(f"books are definitely stale {contract_id}={contract_clock} stale_books={self.stale_books}")
+                        logging.info(f"books are definitely stale {contract_id}={contract_clock} stale_books={len(self.stale_books)}")
                         union_to_update.add(contract_id)
 
             # this is the new stale set for the next heartbeat
