@@ -1,9 +1,9 @@
+import logging
 import asyncio
 import concurrent
 from tkinter.constants import E
 from ledgerx.websocket import WebSocket
 import threading
-import logging
 import json
 import ledgerx
 
@@ -542,11 +542,11 @@ class MarketState:
             replay_all = False
             if first['clock'] < order_clock:
                 if order_clock - first['clock'] > 10:
-                    logging.warning(f"Replaying {len(oooo)} out-of-order entries and forcing a reload order={order_clock} vs first={first['clock']}")
+                    logging.warning(f"Replaying {len(oooo)} out-of-order entries on contract_id={contract_id} and forcing a reload order={order_clock} vs first={first['clock']}")
                     replay_all = True
                     stashed_is_okay = False
                 else:
-                    logging.info(f"Still catching up to first out-of-order order: order_clock={order_clock} {first}")
+                    logging.info(f"Still catching up to first out-of-order order on contract_id={contract_id}: order_clock={order_clock} {first}")
             elif first['clock'] == order_clock:
                 assert('mpid' in first)
                 if 'mpid' in order:
@@ -556,25 +556,26 @@ class MarketState:
                     stashed_is_okay = False
                 else:
                     replay_all = True
-            elif last['clock'] == order_clock + 1:
-                logging.info("Stashing the next out-of-order last={last} next={order}")
+            elif last['clock'] + 1 == order_clock:
+                logging.info("Stashing the next out-of-order order on contract_id={contract_id} last={last} next={order}")
                 oooo.append(order)
                 return False
             else:
-                logging.warning(f"Stashed order is also out-of-order {len(oooo)}. order_clock={order_clock} first={first} last={last} order={order}")
+                logging.warning(f"Stashed order is also out-of-order {len(oooo)}. on contract_id={contract_id} order_clock={order_clock} first={first} last={last} order={order}")
                 replay_all = True
                 stashed_is_okay = False
             if replay_all:
                 # replay and consume the stashed orders, then process this duplicate
-                logging.warning(f"Replaying {len(oooo)} out-of-order orders: {oooo}")
+                logging.warning(f"Replaying {len(oooo)} out-of-order orders on contract_id={contract_id}: {oooo}")
                 # first delete the oooo queue
                 del self.my_out_of_order_orders[contract_id]
                 for replay in oooo:
                     await self.handle_action(replay, True)
-                logging.info(f"Finished replaying out-of-order orders, this too should be duplicate that is ignored {order}")
+                logging.info(f"Finished replaying out-of-order orders on contract_id={contract_id}, this too should be duplicate that is ignored order_clock={order_clock} {order}")
             if not stashed_is_okay:
-                logging.warning(f"Forcing reload of books for {contract_id} at clock={order_clock} order={order}, oooo={oooo}")
-                del self.my_out_of_order_orders[contract_id]
+                logging.warning(f"Forcing reload of books on contract_id={contract_id} at clock={order_clock} order={order}, oooo={oooo}")
+                if contract_id in self.my_out_of_order_orders:
+                    del self.my_out_of_order_orders[contract_id]
                 await self.async_load_books(contract_id)
                 if self.contract_clock[contract_id] != -2:
                     contract_clock = self.contract_clock[contract_id]
@@ -1569,6 +1570,7 @@ class MarketState:
     async def load_market(self):
         logging.info(f"Loading the Market")
         self.clear()
+        self.is_active = False
 
         self.start_action_queue() # load_positions_orders_and_books will process queued actions
         

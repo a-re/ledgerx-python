@@ -1,6 +1,6 @@
+import logging
 import asyncio
 import concurrent.futures
-import logging
 import websockets
 import json
 from time import sleep
