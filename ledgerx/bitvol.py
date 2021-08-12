@@ -6,6 +6,8 @@ import datetime as dt
 
 import logging
 
+logger = logging.getLogger(__name__)
+
 class Bitvol:
     @classmethod
     def list(cls, params: Dict = {}) -> List[Dict]:
@@ -122,7 +124,7 @@ class BitvolCache:
         if key in cls.cache:
             bitvol = cls.cache[key]
         else:
-            logging.info(f"No cache for {key} {cls.cache}")
+            logger.info(f"No cache for {key} {cls.cache}")
         if bitvol is not None:
             then = cls.to_time(bitvol['time'])
             if (now - then).total_seconds() > timeout:
@@ -145,7 +147,7 @@ class BitvolCache:
     
     @classmethod
     def store_cached_results(cls, asset, resolution, bitvol_results):
-        logging.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={bitvol_results['data']}")
+        logger.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={bitvol_results['data']}")
         bitvol = None
         if asset == "CBTC":
             asset = "BTC"
@@ -157,9 +159,9 @@ class BitvolCache:
             if result['value'] is not None and (bitvol is None or bitvol['time'] < result['time']):
                 bitvol = result
                 cls.cache[key] = bitvol
-                logging.info(f"stored {key}={bitvol}")
+                logger.info(f"stored {key}={bitvol}")
                 break
-        logging.info(f"latest bitvol={bitvol}")
+        logger.info(f"latest bitvol={bitvol}")
         return bitvol
 
     @classmethod

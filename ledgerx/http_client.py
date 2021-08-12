@@ -8,6 +8,8 @@ from ledgerx import DELAY_SECONDS
 
 import logging
 
+logger = logging.getLogger(__name__)
+
 class HttpClient:
     # TODO(weston) - handle rate limiting, https://docs.ledgerx.com/reference#rate-limits
     RETRY_429_ERRORS = False
@@ -30,9 +32,9 @@ class HttpClient:
         headers = gen_headers(include_api_key)
         res = None
         while True:
-            logging.info(f"getting {url} {'Authorization' in headers} {params}")
+            logger.info(f"getting {url} {'Authorization' in headers} {params}")
             res = requests.get(url, headers=headers, params=params)
-            logging.debug(f"get {url} {res}")
+            logger.debug(f"get {url} {res}")
             if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
                     delay += 1
@@ -40,11 +42,11 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
                 if res.status_code != 200:
-                    logging.warning(f"res={res} url={url} params={params}")
+                    logger.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 break
         return res
@@ -75,12 +77,12 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
                 if res.status_code != 200:
-                    logging.warning(f"res={res} url={url} json={data}")
-                logging.debug(f"post {url} {res}")
+                    logger.warning(f"res={res} url={url} json={data}")
+                logger.debug(f"post {url} {res}")
                 res.raise_for_status()
                 break
         return res
@@ -103,7 +105,7 @@ class HttpClient:
         headers = gen_headers(include_api_key)
         res = None
         while True:
-            logging.info(f"Executing delete url={url} params={params}")
+            logger.info(f"Executing delete url={url} params={params}")
             res = requests.delete(url, headers=headers, params=params)
             if res.status_code == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
@@ -112,12 +114,12 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
                 if res.status_code != 200:
-                    logging.warning(f"res={res} url={url} params={params}")
-                logging.debug(f"delete {url} {res}")
+                    logger.warning(f"res={res} url={url} params={params}")
+                logger.debug(f"delete {url} {res}")
                 res.raise_for_status()
                 break
         return res
@@ -127,7 +129,7 @@ class HttpClient:
     def bootstrap_aiohttp_session(cls):
         loop = asyncio.get_event_loop()
         if cls.aiohttp_session is None:
-            logging.info(f"new aiohttp.ClientSession")
+            logger.info(f"new aiohttp.ClientSession")
             cls.aiohttp_session = aiohttp.ClientSession(loop=loop)
         return cls.aiohttp_session
 
@@ -153,10 +155,10 @@ class HttpClient:
         res = None
         
         while True:
-            logging.info(f"getting {url} {'Authorization' in headers} {params}")
+            logger.info(f"getting {url} {'Authorization' in headers} {params}")
             #res = await loop.run_in_executor(None, requests.get, url, dict(**params, headers=headers))
             res = await aiohttp_session.get(url, headers=headers, params=params)
-            logging.debug(f"got from {url} : res={res}")
+            logger.debug(f"got from {url} : res={res}")
 
             if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
@@ -165,11 +167,11 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
                 if res.status != 200:
-                    logging.warning(f"res={res} url={url} params={params}")
+                    logger.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 return res
 
@@ -192,7 +194,7 @@ class HttpClient:
         headers = gen_headers(include_api_key)
         while True:
             res = await aiohttp_session.post(url, headers=headers, json=data)
-            logging.debug(f"post {url} {res}")
+            logger.debug(f"post {url} {res}")
             if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
                     delay += 1
@@ -200,11 +202,11 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
                 if res.status != 200:
-                    logging.warning(f"res={res} url={url} data={data}")
+                    logger.warning(f"res={res} url={url} data={data}")
                 res.raise_for_status()
                 return res
 
@@ -227,7 +229,7 @@ class HttpClient:
         headers = gen_headers(include_api_key)
         while True:
             res = await aiohttp_session.delete(url, params=params, headers=headers)
-            logging.debug(f"delete {url} {res}")
+            logger.debug(f"delete {url} {res}")
             if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
                 if delay == DELAY_SECONDS:
                     delay += 1
@@ -235,11 +237,11 @@ class HttpClient:
                     delay *= 2.0
                 if delay > 10:
                     delay = 10
-                logging.info(f"Got 429, delaying {delay}s before retry of url: {url}")
+                logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
                 if res.status != 200:
-                    logging.warning(f"res={res} url={url} params={params}")
+                    logger.warning(f"res={res} url={url} params={params}")
                 res.raise_for_status()
                 return res
 
