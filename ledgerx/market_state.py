@@ -292,6 +292,9 @@ class MarketState:
         else:
             return True
 
+    def contract_is_active(self, contract, preemptive_seconds = 15):
+        return self.contract_is_live(contract) and not self.contract_is_expired(contract, preemptive_seconds)
+
     def contract_label(self, contract_id):
         if contract_id in self.all_contracts:
             return f"{contract_id}-{self.all_contracts[contract_id]['label']}"
@@ -382,6 +385,10 @@ class MarketState:
             assert(self.cid == order['cid'])
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
         mid = order['mid']
+        if not is_it:
+            is_it = mid in self.all_my_mids
+        if not is_it:
+            is_it = mid in self.my_orders
         if is_it:
             status = None if 'status_type' not in order else order['status_type']
             if (status == 200 or status == 201 or status == 204) and mid not in self.my_orders:
@@ -390,9 +397,6 @@ class MarketState:
             elif mid not in self.all_my_mids:
                 logger.info(f"recording {mid} as MY cancelled order")
                 self.all_my_mids.add(mid)
-        if (mid in self.my_orders or mid in self.all_my_mids) and not is_it:
-            logger.warning(f"My order was recognised in my_orders {mid in self.my_orders} or all_my_mids {mid in self.all_my_mids} but has no mpid {order}")
-            is_it = True
         return is_it
 
     def get_book_state(self, contract_id):
