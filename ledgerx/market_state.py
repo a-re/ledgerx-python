@@ -11,6 +11,7 @@ import datetime as dt
 
 from ledgerx.util import unique_values_from_key
 from ledgerx import BitvolCache
+from ledgerx import BraveCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class MarketState:
         self.action_queue = None
         self.handle_counts = dict()
         self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
+        self.all_transactions = dict()        # transaction_id : transaction_json
         self.clear()
         logger.info(f"MarketState constructed {self}")
         
@@ -136,6 +138,10 @@ class MarketState:
         if asset in self.brave:
             return self.brave[asset]
         else:
+            brave = BraveCache.get_brave(asset)
+            if brave is not None:
+                self.brave[asset] = brave
+                return brave
             logger.info(f"No brave price for {asset} {self.brave}")
         return None
 
@@ -1219,6 +1225,7 @@ class MarketState:
         return avail[asset] / self.asset_units[asset]
 
     def have_available(self, asset, amount):
+        """True if get_available has amount in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         avail = self.get_available(asset)
         if avail is None:
             return False
@@ -1227,6 +1234,27 @@ class MarketState:
             return True
         else:
             return False
+
+    def get_available_usd(self, reserve_dollars:int = 0):
+        """Returns the available cash minus reserve in usd units (pennies)"""
+        available_usd = self.get_available('USD')
+        if available_usd is None:
+            available_usd = 0
+        available_usd = available_usd * MarketState.conv_usd - reserve_dollars * MarketState.conv_usd # avail - $reserve_dollars in  usd
+        if available_usd < 0:
+            available_usd = 0
+        logger.info(f"Have ${available_usd/MarketState.conv_usd} with ${reserve_dollars} to spare")
+        return int(available_usd)
+
+    def get_available_collateral(self, underlying_asset):
+        """Returns the number of contracts that can be locked for asset"""
+        avail = self.get_available(underlying_asset)
+        if underlying_asset == "CBTC":
+            return int(avail * 100)
+        elif underlying_asset == "ETH":
+            return int(avail * 10)
+        else:
+            return 0
 
     async def book_top_action(self, action) -> bool:
         assert(action['type'] == 'book_top')
@@ -1310,11 +1338,11 @@ class MarketState:
         count = 0
         if self.action_queue is not None:
             logger.info(f"Processing {len(self.action_queue)} queued actions")
-            while len(self.action_queue) > 0:
+            while self.action_queue is not None and len(self.action_queue) > 0:
                 action = self.action_queue.pop(0)
                 await self.handle_action(action, True)
                 count += 1
-            assert(len(self.action_queue) == 0)
+            assert(self.action_queue is None or len(self.action_queue) == 0)
             self.action_queue = None
         logger.info(f"Done processing {count} queued actions")
             
@@ -1411,7 +1439,9 @@ class MarketState:
         logger.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")
         
     def add_transaction(self, transaction):
-        raise # FIXME self.accounts is wrong
+        logger.info(f"transaction: {transaction}")
+        self.all_transactions[transaction['id']] = transaction
+        return # FIXME self.accounts is wrong
         logger.debug(f"transaction {transaction}")
         if transaction['state'] != 'executed':
             logger.warning(f"unknown state for transaction: {transaction}")
@@ -1477,21 +1507,21 @@ class MarketState:
 
     def process_basis_trades(self, contract, position, trades):
         contract_id = contract['id']
-        logger.info(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
+        logger.debug(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
         pos = 0
         basis = 0
         for trade in trades:
-            logger.debug(f"contract {contract_id} trade {trade}")
+            logger.info(f"contract {contract_id} trade {trade}")
             assert(contract_id == int(trade["contract_id"]))
             if trade["side"] == "bid":
                 # bought so positive basis and position delta
                 basis += trade["fee"] - trade["rebate"] + trade["premium"]
-                pos += trade["filled_size"]
+                pos += int(trade["filled_size"])
             else:
                 assert(trade["side"] == "ask")
                 # sold, so negative basis and negative position delta
-                basis += trade["fee"] - trade["rebate"] - trade["premium"]
-                pos -= trade["filled_size"]
+                basis += int(trade["fee"]) - int(trade["rebate"]) - int(trade["premium"])
+                pos -= int(trade["filled_size"])
         logger.debug(f"final pos {pos} basis {basis} position {position}")
         if position["type"] == "short":
             assert(pos <= 0)
@@ -1607,22 +1637,20 @@ class MarketState:
         # load the set of contracts traded in my account
         self.set_traded_contracts()
 
-        await self.load_positions_orders_and_books()
+        await self.async_load_positions_orders_and_books()
 
         self.is_active = True
         logger.info(f"Done loading the market")
 
-    async def load_all_transactions(self):
-        raise # FIXME
+    async def async_load_all_transactions(self):
         # load transactions for and get account balances
         logger.info("Loading transactions for account balances")
-        transactions = ledgerx.Transactions.list_all()
+        transactions = await ledgerx.Transactions.async_list_all()
         for transaction in transactions:
             self.add_transaction(transaction)
-        logger.info(f"Loaded {len(transactions)} transactions")
-        logger.info(f"Accounts: {self.accounts}")
+        logger.info(f"Loaded {len(transactions)} transactions.  Accounts: {self.accounts}")
            
-    async def load_positions_orders_and_books(self):
+    async def async_load_positions_orders_and_books(self):
         logger.info("Loading positions orders and books")
 
         self.start_action_queue()  # async_load_all_books will process queued actions
@@ -1846,15 +1874,15 @@ class MarketState:
 
     async def async_start_websocket_and_run(self, executor, include_api_key=False, repeat_server_port=None, bot_runner=None):
         loop = asyncio.get_running_loop()
-        task1 = await loop.run_in_executor(executor, self.load_latest_trades)
-        logger.info(f"Loading latest trades in {task1}")
-        task2 = await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port)
-        logger.info(f"Starting websocket in {task2}")
+        futures = []
+        futures.append( await loop.run_in_executor(executor, self.load_latest_trades) )
+        futures.append( await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port) )
         task3 = None
         if bot_runner is not None:
-            task3 = await loop.run_in_executor(executor, bot_runner.run)
+            futures.append( await loop.run_in_executor(executor, bot_runner.run) )
             logger.info(f"Started bot_runner {bot_runner} in {task3}")
-        await asyncio.gather( task1, task2, task3 )
+        ## Too many takes several minutes to download # futures.append( await loop.run_in_executor(executor, self.async_load_all_transactions) )
+        await asyncio.gather( *futures )
         logger.info(f"websocket finished")
         self.is_active = False
 
