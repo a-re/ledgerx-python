@@ -27,17 +27,6 @@ class GZipRotator:
 logger = logging.getLogger(__name__)
 
 
-formatter = logging.Formatter('%(asctime)s\t%(message)s')
-ws_log = logging.handlers.TimedRotatingFileHandler('ledgerx-logs/websocket.log', when='H')
-ws_log.setFormatter(formatter)
-ws_log.rotator = GZipRotator()
-ws_log.setLevel(logging.DEBUG)
-ws_logger = logging.getLogger(f'{__name__}.websocket')
-ws_logger.setLevel(logging.DEBUG)
-ws_logger.addHandler(ws_log)
-
-
-
 class WebSocket:
 
     websocket = None
@@ -49,12 +38,28 @@ class WebSocket:
     include_api_key = False
     active = True
     repeat_server = None
+    ws_logger = None
+
+    @classmethod
+    def init_ws_logger(cls):
+        if cls.ws_logger is None:
+            formatter = logging.Formatter('%(asctime)s\t%(message)s')
+            ws_log = logging.handlers.TimedRotatingFileHandler('ledgerx-logs/websocket.log', when='H')
+            ws_log.setFormatter(formatter)
+            ws_log.rotator = GZipRotator()
+            ws_log.setLevel(logging.DEBUG)
+            ws_logger = logging.getLogger(f'{__name__}.websocket')
+            ws_logger.setLevel(logging.DEBUG)
+            ws_logger.addHandler(ws_log)
+            cls.ws_logger = ws_logger
+        return cls.ws_logger
 
     def __init__(self):
         self.connection = None
         self.consume_task = None
         self.clear()
         logger.info(f"Constructed new WebSocket {self}")
+        WebSocket.init_ws_logger()
 
     def __del__(self):
         try:
@@ -186,7 +191,7 @@ class WebSocket:
             if not WebSocket.active:
                 logger.info(f"WebSocket {self} is no longer active")
                 return
-            ws_logger.debug(message)
+            WebSocket.ws_logger.debug(message)
             data = json.loads(message)
             if 'type' in data:
                 await self.update_by_type(data)
@@ -207,7 +212,7 @@ class WebSocket:
 
     async def listen(self):
         logger.info(f"listening to websocket: {self} conn={self.connection}")
-        ws_logger.info(f"Starting...")
+        WebSocket.ws_logger.info(f"Starting...")
         async with self.connection as websocket:
             logger.info(f"...{self} conn={websocket}")
             await self.subscribe(websocket, ['btc_bitvol', 'eth_bitvol', 'btc_brave', 'eth_brave'])
