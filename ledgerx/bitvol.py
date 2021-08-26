@@ -170,7 +170,7 @@ class BitvolCache:
         if bitvol is None:
             bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
             bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
-        return bitvol['value']
+        return None if bitvol is None else bitvol['value']
 
     @classmethod
     async def async_get_bitvol(cls, asset, resolution = "1W", timeout = 120):
@@ -178,7 +178,7 @@ class BitvolCache:
         if bitvol is None:
             bitvol_results = await Bitvol.async_list(dict(asset=asset, resolution=resolution))
             bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
-        return bitvol['value']
+        return None if bitvol is None else bitvol['value']
 
       
         

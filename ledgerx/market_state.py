@@ -217,11 +217,11 @@ class MarketState:
         return ret
 
     @staticmethod
-    def clean_price(price):
+    def clean_price(price, min_increment:int=100):
         # Transform price (in pennies) into whole dollars (in pennies)
         if price is None:
             return price
-        return int( int(price) // 100 ) * 100   
+        return int( int(price) // min_increment ) * min_increment
 
     @staticmethod
     def ask(top_book):
@@ -400,8 +400,8 @@ class MarketState:
             if (status == 200 or status == 201 or status == 204) and mid not in self.my_orders:
                 logger.info(f"recording {mid} as MY order")
                 self.my_orders.add(mid)
-            elif mid not in self.all_my_mids:
-                logger.info(f"recording {mid} as MY cancelled order")
+            if mid not in self.all_my_mids:
+                logger.info(f"recording {mid} as MY order in all_my_mids")
                 self.all_my_mids.add(mid)
         return is_it
 

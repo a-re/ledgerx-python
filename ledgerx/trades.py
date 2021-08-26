@@ -7,9 +7,7 @@ from ledgerx import DELAY_SECONDS
 
 
 class Trades:
-    default_list_params = dict(
-        status_type=201, limit=DEFAULT_LIMIT, min_size=1, mine=False, asset="CBTC"
-    )
+    default_list_params = dict(limit=DEFAULT_LIMIT)
     default_list_all_params = dict(limit=DEFAULT_LIMIT)
     default_trading_trades_global_delay = DELAY_SECONDS
 
