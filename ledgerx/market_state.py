@@ -398,8 +398,11 @@ class MarketState:
         if is_it:
             status = None if 'status_type' not in order else order['status_type']
             if (status == 200 or status == 201 or status == 204) and mid not in self.my_orders:
-                logger.info(f"recording {mid} as MY order")
-                self.my_orders.add(mid)
+                if status == 201 and 'status_reason' in order and int(order['status_reason']) == 52:
+                    pass # do not record a filled order - especially in replay
+                else:
+                    logger.info(f"recording {mid} as MY order")
+                    self.my_orders.add(mid)
             if mid not in self.all_my_mids:
                 logger.info(f"recording {mid} as MY order in all_my_mids")
                 self.all_my_mids.add(mid)
@@ -1523,15 +1526,19 @@ class MarketState:
                 basis += int(trade["fee"]) - int(trade["rebate"]) - int(trade["premium"])
                 pos -= int(trade["filled_size"])
         logger.debug(f"final pos {pos} basis {basis} position {position}")
-        if position["type"] == "short":
-            assert(pos <= 0)
-        else:
-            assert(position["type"] == "long")
-            assert(pos >= 0)
+
         if pos != position['size']:
             logger.warning(f"update to position did not yield pos={pos} {position}, updating them all")
             self.update_all_positions()
             return
+            
+        if pos < 0 and position["type"] == "long":
+            logger.info(f"Fixing to short from long {position}")
+            position["type"] = "short"
+        elif pos >= 0 and position["type"] == "short":
+            logger.info(f"Fixing to long from short {position}")
+            position["type"] = "long"
+
         position['basis'] = basis # basis is in usd_units
         cost = basis / MarketState.conv_usd
         self.contract_positions[contract_id] = position
