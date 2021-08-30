@@ -25,11 +25,10 @@ class MarketState:
 
     # divide LX balances to get tradable units
     conv_usd  = 100            # 100 units == $1
-    conv_cbtc = 100000000      # 100M units == 0.01BTC == 1CBTC
+    conv_cbtc = 1000000        # 1M units == 0.01BTC == 1CBTC
     conv_eth  = 1000000000     # 1B units == 1ETH
-    conv_btc = conv_cbtc * 100 # 100M units == 1BTC ???
 
-    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth) 
+    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=1) 
 
     def __init__(self, skip_expired : bool = True):
         self.is_active = False
@@ -247,12 +246,16 @@ class MarketState:
             return False
 
     @staticmethod
-    def fee(price, size):
-        # $0.15 per contract or 20% of price whichever is less
-        fee_per_contract = price // (5 * MarketState.conv_usd) # 20%
-        if fee_per_contract >= 15:
-            fee_per_contract = 15
-        return abs(size) * fee_per_contract
+    def fee(price:int, size:int, is_option_contract:bool=True):
+        if is_option_contract:
+            # $0.15 per contract or 20% of price whichever is less
+            fee_per_contract = price // (5 * MarketState.conv_usd) # 20%
+            if fee_per_contract >= 15:
+                fee_per_contract = 15
+            return abs(size) * fee_per_contract
+        else:
+            # $0.05 per swap/future contractf
+            return abs(size) * 5
 
     @staticmethod
     def is_same_option_date(contract_a, contract_b):
@@ -864,7 +867,7 @@ class MarketState:
             del self.book_states[contract_id] # signal to load books in next heartbeat
     
         
-    def get_top_book_states(self, contract_id, clock_lag = 0):
+    def get_top_book_states(self, contract_id:int, clock_lag:int=0):
         """
         returns (top_bid_book_state, top_ask_book_state, clock_lag), after comparing top with all book states
         refreshing book states, if needed
@@ -916,7 +919,7 @@ class MarketState:
                 top_book_states[1]['size']=1
         return top_book_states
 
-    def get_market_book_order_price(self, contract_id:int, is_ask=bool, size=1, margin=0):
+    def get_market_book_order_price(self, contract_id:int, is_ask=bool, size:int=1, margin:int=0):
         """Returns the market price for an is_ask order to trade size contracts which are currently on the books"""
         if contract_id in self.book_states:
             books = self.book_states[contract_id]
@@ -939,6 +942,28 @@ class MarketState:
                 else:
                     return offer['price'] + margin
         return None
+
+    def get_market_book_order_contracts(self, contract_id:int, is_ask:bool, price):
+        """
+        Returns the number of contracts available in the books for an is_ask order at the price 
+        (may be over estimate with market reusing collareral for orders)
+        """
+        contracts = 0
+        if contract_id in self.book_states:
+            books = self.book_states[contract_id]
+            for mid,book_state in books.items():
+                if mid == 'last_delete_clock':
+                    continue
+                if book_state['is_ask'] != is_ask:
+                    # opposite side
+                    if is_ask and book_state['price'] >= price:
+                        # this is a sell order, only higher bids
+                        contracts += book_state['size']
+                    elif book_state['price'] <= price and not is_ask:
+                        # this is a buy order so only lower asks
+                        contracts += book_state['size']
+        logger.info(f"There are {contracts} market contracts to {'buy' if is_ask else 'sell'} on {contract_id} at price={price} in the books")
+        return contracts    
 
     def load_books(self, contract_id):
         logger.info(f"Loading books for {contract_id}")
@@ -1217,7 +1242,7 @@ class MarketState:
                 self.accounts[balance][asset] = val
 
     def get_available(self, asset):
-        """available balance in units of the asset (1BTC, 1ETH, 1 Dollar)"""
+        """available balance in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)"""
         if 'available_balances' not in self.accounts:
             logger.warning(f"No available balances in accounts!!")
             return None
@@ -1225,10 +1250,12 @@ class MarketState:
         if asset not in avail:
             logger.warning(f"No {asset} in balances {self.accounts}")
             return None
-        return avail[asset] / self.asset_units[asset]
+        x = avail[asset] / self.asset_units[asset]
+        logger.info(f"available {asset}={x}")
+        return x
 
     def have_available(self, asset, amount):
-        """True if get_available has amount in units of the asset (1BTC, 1ETH, 1 Dollar)"""
+        """True if get_available has amount in units of the asset (1BTC, 1 CBTC, 1ETH, 1 Dollar)"""
         avail = self.get_available(asset)
         if avail is None:
             return False
@@ -1238,8 +1265,68 @@ class MarketState:
         else:
             return False
 
+    def get_delta_available_assets(self, contract_id:int, is_ask:bool, price:int, size:int):
+        """
+        What collateral and asset changes upon execution, sales revenue, purchase costs, fees, locked, unlocked collateral
+        returns dict(asset=float) in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)
+        """
+        assert(size > 0)
+        assert(price > 0)
+        contract = self.get_contract(contract_id)
+        
+        assert(contract is not None)
+        multiplier = contract['multiplier']
+        derivative_type = contract['derivative_type']
+        delta_assets = dict()
+        delta_assets["USD"] = - MarketState.fee(price, size, derivative_type == 'options_contract')
+        delta_assets["USD"] += price * size / multiplier * (1 if is_ask else -1) # sales net positive
+        position = self.get_my_position(contract_id)
+        if position is None:
+            position = 0
+        collateral_asset = contract['collateral_asset']
+        logger.info(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
+
+        if is_ask:
+            # selling
+            if derivative_type in ['day_ahead_swap', 'future_contract', 'options_contract']:
+                if position - size <= 0:
+                    # resulting in a short position, locking some collateral
+                    delta_short_size = size
+                    if position > 0:
+                        # start with a positive position that does not release collateral
+                        delta_short_size = size - position
+                    assert(delta_short_size > 0)
+                    # locking assets
+                    if derivative_type == 'options_contract' and contract['type'] == 'put':
+                        assert(collateral_asset == "USD")
+                        delta_assets["USD"] -= delta_short_size * contract['strike_price'] / multiplier
+                    else:
+                        delta_assets[collateral_asset] = - delta_short_size * MarketState.asset_units[collateral_asset] / multiplier # FIXME
+        else:
+            # purchasing
+            if position < 0:
+                # starting with a short position, unlocking some collateral
+                delta_short_size = size
+                if position + size >= 0:
+                    # resulting in a long position which will not further unlock
+                    delta_short_size = - position
+                assert(delta_short_size > 0)
+                # unlocking assets
+                if derivative_type == 'options_contract' and contract['type'] == 'put':
+                    assert(collateral_asset == "USD")
+                    delta_assets["USD"] += delta_short_size * contract['strike_price'] / multiplier
+                else:
+                    delta_assets[collateral_asset] = delta_short_size * MarketState.asset_units[collateral_asset] / multiplier # FIXME
+        for asset,val in delta_assets.items():
+            # convert to units of 1 BTC, 1ETH, 1 Dollar
+            delta_assets[asset] = delta_assets[asset] / MarketState.asset_units[asset]
+            if asset == 'CBTC': ## FIXME HACK
+                delta_assets[asset] *= 100
+        logger.info(f"{'selling' if is_ask else 'purchasing'} {size} contracts of {self.contract_label(contract_id)} at {price} yields {delta_assets} current position={position}")
+        return delta_assets
+
     def get_available_usd(self, reserve_dollars:int = 0):
-        """Returns the available cash minus reserve in usd units (pennies)"""
+        """Returns the available cash minus reserve in market native usd units (pennies)"""
         available_usd = self.get_available('USD')
         if available_usd is None:
             available_usd = 0
@@ -1253,10 +1340,11 @@ class MarketState:
         """Returns the number of contracts that can be locked for asset"""
         avail = self.get_available(underlying_asset)
         if underlying_asset == "CBTC":
-            return int(avail * 100)
+            return int(avail)
         elif underlying_asset == "ETH":
             return int(avail * 10)
         else:
+            logger.warning(f"No assets for {underlying_asset}")
             return 0
 
     async def book_top_action(self, action) -> bool:
@@ -1531,7 +1619,7 @@ class MarketState:
             logger.warning(f"update to position did not yield pos={pos} {position}, updating them all")
             self.update_all_positions()
             return
-            
+
         if pos < 0 and position["type"] == "long":
             logger.info(f"Fixing to short from long {position}")
             position["type"] = "short"
@@ -1609,6 +1697,21 @@ class MarketState:
         if update_basis_too:
             self.update_basis(contract_id, position)
         
+    def reload_open_orders(self):
+        # load my open orders
+        new_open_orders = ledgerx.Orders.list_open()['data']
+        logger.info(f"Currently know of {len(self.my_orders)} open orders")
+        self.my_orders.clear()
+        num = 0
+        for order in new_open_orders:
+            assert('mpid' in order)
+            assert(self.is_my_order(order))
+            logger.info(f"open order {order}")
+            assert('mpid' in order)
+            self.my_orders.add(order['mid'])
+            num += 1
+        logger.info(f"Found {num} of MY open orders")
+    
     async def load_market(self):
         logger.info(f"Loading the Market")
         self.clear()
@@ -1629,17 +1732,8 @@ class MarketState:
             self.add_contract(contract)
         logger.info(f"Found {len(self.all_contracts.keys())} Contracts")
 
-        # load my open orders
-        self.my_orders.clear()
-        num = 0
-        for order in ledgerx.Orders.list_open()['data']:
-            assert('mpid' in order)
-            assert(self.is_my_order(order))
-            logger.info(f"open order {order}")
-            assert('mpid' in order)
-            self.my_orders.add(order['mid'])
-            num += 1
-        logger.info(f"Found {num} of MY open orders")
+
+        self.reload_open_orders()
 
         # load the set of contracts traded in my account
         self.set_traded_contracts()
