@@ -62,8 +62,9 @@ class MarketState:
                                               # Old messages can safely be ignored.
                                               # Gaps should refresh
         self.book_states = dict()             # all books in the market  dict{contract_id : dict{mid : book_state}}
+        self.async_reloading_books = dict()   # contract: async_future - books that are in the process of being reloaded
         self.book_top = dict()                # all top books in the market dict{contract_id : top}
-        self.stale_books = dict()               # contracts best book clock whose book_top is ahead of the contract_clock by >1 heartbeat
+        self.stale_books = dict()             # contracts best book clock whose book_top is ahead of the contract_clock by >1 heartbeat
         if self.last_trade is None:
             self.last_trade = dict()          # last observed trade for a contract dict(contract_id: action)
         self.to_update_basis = dict()         # the set of detected stale positions requiring updates dict(contract_id: position)
@@ -100,7 +101,7 @@ class MarketState:
                 self.load_books(contract_id)
             else:
                 if contract_id in self.book_states:
-                    del self.book_states[contract_id] # signal to load books in next heartbeat
+                    self.queue_reload_books(contract_id) # signal to load books in next heartbeat
                 return None
         if contract_id not in self.book_top:
             logger.warning(f"No books for {contract_id}")
@@ -495,12 +496,21 @@ class MarketState:
             
             # adjust size in the order to be the *new* size as books - filled_size
             new_size = order['size']
-            if 'filled_size' in order and book_order['size'] > 0:
-                new_size = book_order['size'] - order['filled_size']
-                if new_size < 0:
-                    logger.warning(f"Calculated negative size {new_size} from book_order {book_order} vs {order}")
-                    new_size = 0
-            
+            need_book_reload = False
+            if 'filled_size' in order and order['filled_size'] > 0 and book_order['size'] > 0:
+                book_new_size = book_order['size'] - order['filled_size']
+                if book_new_size < 0:
+                    logger.warning(f"Calculated negative size {book_new_size} from book_order {book_order} vs {order}")
+                    need_book_reload = True
+                    book_new_size = 0
+                if book_new_size != new_size:
+                    if new_size == 0:
+                        logger.info(f"Partial-Filled order resulted in 0 size even though {book_new_size} should remain on the books {book_order} {order}, books will now be 0")
+                    else:
+                        logger.warning(f"Calculated DIFFERENT size {book_new_size} vs {new_size} from book_order {book_order} than that remaining in order {order}")
+                        need_book_reload = True
+                new_size = book_new_size
+                        
             logger.debug(f"Adjusted size (keeping book price) from {order['size']} @ ${order['price']//100} to {new_size} @ ${book_order['price']//100} because book_order {book_order} vs trade {order}")
             assert(new_size <= book_order['size'])
             book_order['size'] = new_size
@@ -509,10 +519,14 @@ class MarketState:
             if book_order['size'] == 0:
                 logger.debug(f"Full order filled, removing {order}")
                 self.remove_order(order)
-                assert(order['status_reason'] == 52)
+                if order['status_reason'] != 52:
+                    logger.warning(f"This fullly filled order does not have the status_reason==52 book_order={book_order} order={order}")
+                    need_book_reload = True
             else:
                 logger.debug(f"Replaced existing order on {label} to {book_order} from {order}")
                 self.handle_book_state(contract_id, book_order)
+            if need_book_reload:
+                self.queue_reload_books(contract_id)
         else:
             if book_order['ticks'] == order['ticks']:
                 if not inserted:
@@ -593,7 +607,7 @@ class MarketState:
                 logger.warning(f"Forcing reload of books on contract_id={contract_id} at clock={order_clock} order={order}, oooo={oooo}")
                 if contract_id in self.my_out_of_order_orders:
                     del self.my_out_of_order_orders[contract_id]
-                await self.async_load_books(contract_id)
+                self.queue_reload_books(contract_id)
                 if self.contract_clock[contract_id] != -2:
                     contract_clock = self.contract_clock[contract_id]
                 
@@ -604,7 +618,8 @@ class MarketState:
         else:
             contract_clock = self.contract_clock[contract_id]
 
-        logger.info(f"order: {contract_id} clock={order_clock} c_clock={contract_clock} status={status} is_my_order={is_my_order}/{'mpid' in order} mid={mid} price={order['price']} size={order['size']} is_ask={order['is_ask']}")
+        filled_str = '' if 'filled_size' not in order or order['filled_size'] == 0 else f" filled={order['filled_size']}"
+        logger.info(f"order: {contract_id} clock={order_clock} cc={contract_clock} status={status} is_my_order={is_my_order}/{'mpid' in order} mid={mid} price={order['price']} size={order['size']} is_ask={order['is_ask']}{filled_str}")
         
         if order_clock <= contract_clock and is_my_order and 'mpid' not in order:
             logger.info(f"Skipping old and duplicate instance of MY order {mid} status={status}")
@@ -864,7 +879,7 @@ class MarketState:
         good_book_top, matches = self.check_book_top(book_top)
         if not matches:
             logger.warning(f"Reloading book states as the calculated book_top {book_top} != good_book_top {good_book_top}")
-            del self.book_states[contract_id] # signal to load books in next heartbeat
+            self.queue_reload_books(contract_id) # signal to load books in next heartbeat
     
         
     def get_top_book_states(self, contract_id:int, clock_lag:int=0):
@@ -963,7 +978,48 @@ class MarketState:
                         # this is a buy order so only lower asks
                         contracts += book_state['size']
         logger.info(f"There are {contracts} market contracts to {'buy' if is_ask else 'sell'} on {contract_id} at price={price} in the books")
-        return contracts    
+        return contracts 
+
+
+    def check_not_my_opposite_offer(self, is_ask:bool, contract_id:int, price:int, exact_match:bool=True):  
+        # verifies opposite competing market trade (swap/option/etc) would NOT be with MY orders (book_top only)
+        top = self.get_book_top(contract_id)
+        if contract_id not in self.book_states:
+            return True
+        for mid,book in self.book_states[contract_id].items():
+            if mid in self.all_my_mids:
+                if book['is_ask'] == is_ask:
+                    pass # same side
+                else:
+                    if is_ask:
+                        # offer is selling check top_book bid for price <= bid 
+                        if book['price'] == top['bid'] and price <= book['price']:
+                            logger.info(f"to sell is my opposite offer on {contract_id} price=${price//MarketState.conv_usd} book={book}")
+                            return False
+                    else:
+                        # offer is buying check top_book ask for price >= ask
+                        if book['price'] == top['ask'] and price >= book['price']:
+                            logger.info(f"to buy is my opposite offer on {contract_id} price=${price//MarketState.conv_usd} book={book}")
+                            return False
+        
+        return True
+
+    def check_is_my_offer(self, is_ask: bool, contract_id:int, price:int, exact_match:bool=True):
+        """Returns True when one of my orders in the books has this price (or beats this price if exact_match is False)"""
+        if contract_id not in self.book_states:
+            return False
+        for mid,book in self.book_states[contract_id].items():
+            if mid in self.all_my_mids:
+                if book['is_ask'] == is_ask: # same side
+                    if exact_match and book['price'] == price: #  prices
+                        return True
+                    elif not exact_match:
+                        if is_ask and book['price'] <= price: # sell so match any <= price of mine
+                            return True
+                        elif (not is_ask) and book['price'] >= price: # buy so match any >= price of mine
+                            return True
+
+        return False   
 
     def load_books(self, contract_id):
         logger.info(f"Loading books for {contract_id}")
@@ -1289,7 +1345,7 @@ class MarketState:
         if is_ask:
             # selling
             if derivative_type in ['day_ahead_swap', 'future_contract', 'options_contract']:
-                if position - size <= 0:
+                if position - size < 0:
                     # resulting in a short position, locking some collateral
                     delta_short_size = size
                     if position > 0:
@@ -1890,6 +1946,10 @@ class MarketState:
         await ledgerx.Trades.async_list_all_incremental_return(dict(after_ts=after_date,before_ts=before_date),self.process_trades)
         logger.info(f"Finished loading past trades")
 
+    def queue_reload_books(self, contract_id):
+        if contract_id not in self.async_reloading_books:
+            self.async_reloading_books[contract_id] = self.async_load_books(contract_id)
+
     async def load_remaining_books(self, max = 100):
         # called every heartbeat
         futures = []
@@ -1924,7 +1984,7 @@ class MarketState:
             for contract_id, contract in self.all_contracts.items():
                 if self.contract_is_expired(contract):
                     continue
-                has_book_states = contract_id in self.book_states
+                has_book_states = contract_id in self.book_states or contract_id in self.async_reloading_books
                 book_top_clock = None
                 if contract_id in self.book_top:
                     book_top_clock = self.book_top[contract_id]['clock']
@@ -1956,6 +2016,10 @@ class MarketState:
                 for contract_id in union_to_update:
                     if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
                         futures.append(self.async_load_books(contract_id))
+
+        for contract_id, async_fut in self.async_reloading_books.items():
+            futures.append( async_fut )
+        self.async_reloading_books.clear()
 
         if len(futures) > 0:
             await asyncio.gather( *futures )
