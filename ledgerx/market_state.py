@@ -1321,11 +1321,18 @@ class MarketState:
         else:
             return False
 
-    def get_delta_available_assets(self, contract_id:int, is_ask:bool, price:int, size:int):
+    def get_delta_available_assets(self, contract_id:int, is_ask:bool, price:int, size:int, expiring:bool=False, assigning:bool=False):
         """
         What collateral and asset changes upon execution, sales revenue, purchase costs, fees, locked, unlocked collateral
         returns dict(asset=float) in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)
+        if expiring, instead calculate what happens if it expires worthless
+        if assigning, instead calculate what happens if it expires exercised
         """
+        logger.info(f"getting delta available assets: {contract_id}, {is_ask}, {price}, {size}, {expiring}, {assigning}")
+        if assigning:
+            assert(not expiring)
+        else:
+            assert(not assigning)
         assert(size > 0)
         assert(price > 0)
         contract = self.get_contract(contract_id)
@@ -1334,18 +1341,45 @@ class MarketState:
         multiplier = contract['multiplier']
         derivative_type = contract['derivative_type']
         delta_assets = dict()
-        delta_assets["USD"] = - MarketState.fee(price, size, derivative_type == 'options_contract')
-        delta_assets["USD"] += price * size / multiplier * (1 if is_ask else -1) # sales net positive
+        
+        # account for premium and fees
+        if expiring or assigning:
+            delta_assets["USD"] = 0 # no purchase / sale price or fee
+        else:
+            delta_assets["USD"] = - MarketState.fee(price, size, derivative_type == 'options_contract')
+            delta_assets["USD"] += price * size / multiplier * (1 if is_ask else -1) # sales net positive
+
         position = self.get_my_position(contract_id)
         if position is None:
             position = 0
         collateral_asset = contract['collateral_asset']
+        delta_assets[collateral_asset] = 0
         logger.info(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
 
         if is_ask:
             # selling
             if derivative_type in ['day_ahead_swap', 'future_contract', 'options_contract']:
-                if position - size < 0:
+                if assigning:
+                    # sold. collateral is gone, if an option, strike is paid or asset is received
+                    if derivative_type == 'options_contract':
+                        if contract['type'] == 'put':
+                            delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
+                        else:
+                            assert(contract['type'] == 'call')
+                            delta_assets["USD"] += size * contract['strike_price'] / multiplier
+                    else:
+                        pass # futures and swaps have no receivable when short
+                elif expiring:
+                    # sold. collateral is just unlocked
+                    if derivative_type == 'options_contract':
+                        if contract['type'] == 'put':
+                            delta_assets["USD"] += size * contract['strike_price'] / multiplier 
+                        else:
+                            assert(contract['type'] == 'call')
+                            delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
+                    else:
+                        pass # futures and swaps have no receivable when short (also expired futures do not exist (always assigned))
+                elif position - size < 0:
                     # resulting in a short position, locking some collateral
                     delta_short_size = size
                     if position > 0:
@@ -1357,10 +1391,25 @@ class MarketState:
                         assert(collateral_asset == "USD")
                         delta_assets["USD"] -= delta_short_size * contract['strike_price'] / multiplier
                     else:
-                        delta_assets[collateral_asset] = - delta_short_size * MarketState.asset_units[collateral_asset] / multiplier # FIXME
+                        delta_assets[collateral_asset] -= delta_short_size * MarketState.asset_units[collateral_asset] / multiplier
         else:
             # purchasing
-            if position < 0:
+            if assigning:
+                # bought and ITM, futures deliver collateral, options complete contract with collateral and get other collateral
+                if derivative_type in ['day_ahead_swap', 'future_contract']:
+                    delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
+                else:
+                    assert(derivative_type == 'options_contract')
+                    if contract['type'] == 'put':
+                        delta_assets[collateral_asset] -= size * MarketState.asset_units[collateral_asset] / multiplier
+                        delta_assets["USD"] += size * contract['strike_price'] / multiplier
+                    else:
+                        assert(contract['type'] == 'call')
+                        delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
+                        delta_assets["USD"] -= size * contract['strike_price'] / multiplier
+            elif expiring:
+                pass # nothing happens. does not apply to futures & swaps
+            elif position < 0:
                 # starting with a short position, unlocking some collateral
                 delta_short_size = size
                 if position + size >= 0:
@@ -1372,13 +1421,16 @@ class MarketState:
                     assert(collateral_asset == "USD")
                     delta_assets["USD"] += delta_short_size * contract['strike_price'] / multiplier
                 else:
-                    delta_assets[collateral_asset] = delta_short_size * MarketState.asset_units[collateral_asset] / multiplier # FIXME
+                    delta_assets[collateral_asset] = delta_short_size * MarketState.asset_units[collateral_asset] / multiplier
         for asset,val in delta_assets.items():
             # convert to units of 1 BTC, 1ETH, 1 Dollar
             delta_assets[asset] = delta_assets[asset] / MarketState.asset_units[asset]
             if asset == 'CBTC': ## FIXME HACK
                 delta_assets[asset] *= 100
-        logger.info(f"{'selling' if is_ask else 'purchasing'} {size} contracts of {self.contract_label(contract_id)} at {price} yields {delta_assets} current position={position}")
+        assign_or_expire = ''
+        if expiring or assigning:
+            assign_or_expire = 'when ' + 'expiring' if expiring else 'assigning'
+        logger.info(f"{'selling' if is_ask else 'purchasing'} {size} {assign_or_expire} contracts of {self.contract_label(contract_id)} at {price} yields {delta_assets} current position={position}")
         return delta_assets
 
     def get_available_usd(self, reserve_dollars:int = 0):
