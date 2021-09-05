@@ -490,9 +490,6 @@ class MarketState:
         contract = self.all_contracts[contract_id]
         label = contract['label']
         if book_order['clock'] <= order['clock']:
-            if self.is_my_order(book_order) and not self.is_my_order(order):
-                logger.info("Existing order is mine but replacement is not. Adding mpid to order.  existing book_order {book_order} order {order}!")
-                order['mpid'] = book_order['mpid']
             
             # adjust size in the order to be the *new* size as books - filled_size
             new_size = order['size']
@@ -534,6 +531,10 @@ class MarketState:
             else:
                 logger.warning(f"existing order on {label} {book_order} is newer {order}, ignoring update")
 
+        is_my_order = self.is_my_order(order)
+        if is_my_order and 'mpid' not in book_order:
+            logger.info("Existing book_order should be mine but is not. Adding mpid to book_order.  existing book_order {book_order} order {order}!")
+            book_order['mpid'] = self.mpid
 
     # returns True for a unique report, False for a dup to be ignored
     async def handle_order(self, order, ignore_out_of_order:bool = False) -> bool:
@@ -670,26 +671,23 @@ class MarketState:
             self.insert_new_order(order)
         elif status == 201:
             # a cross (trade) occured            
-            if is_my_order and 'mpid' in order:
+            if is_my_order:
                
                 delta_pos = order['filled_size']
                 delta_basis = order['filled_size'] * order['filled_price']
                 divisor = contract['multiplier'] * MarketState.conv_usd
                 
-                if order['is_ask']:
-                    # sold
-                    logger.info(f"Observed sale of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
-                else:
-                    # bought
-                    logger.info(f"Observed purchase of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
+                logger.info(f"Observed {f'sale' if order['is_ask'] else 'purchase'} of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
 
-                #if 'id' in position:
-                #    size = position['size']
-                #    basis = position['basis']
-                #    self.update_position(contract_id, position)
-                #    if position['size'] != size or position['basis'] != basis:
-                #        logger.warning(f"After refresh of trades, size and/or basis do not agree with approximation: {size} {basis} {position} {order}")
-
+                if contract_id in self.contract_positions:
+                    position = self.contract_positions[contract_id]
+                    logger.info(f"Changing by {delta_pos} position on {self.contract_label(contract_id)} from {position}")
+                    if order['is_ask']:
+                        # sold
+                        position['size'] -= delta_pos
+                    else:
+                        position['size'] += delta_pos
+                
             self.replace_existing_order(order)
             self.handle_trade(order)
 
@@ -1960,6 +1958,9 @@ class MarketState:
                 side='ask' if action_report['is_ask'] else 'bid')
         if 'mpid' in action_report:
             test['mpid'] = action_report['mpid']
+        if 'mpid' not in action_report and self.is_my_order(action_report):
+            logger.warning(f"Added mpid to my order that does not have it: {action_report}")
+            test['mpid'] = self.mpid
         if contract_id in self.last_trade:
             last = self.last_trade[contract_id]
         if last is None or test['timestamp'] > last['timestamp']:
