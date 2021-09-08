@@ -305,9 +305,12 @@ class MarketState:
     def contract_is_active(self, contract, preemptive_seconds = 15):
         return self.contract_is_live(contract) and not self.contract_is_expired(contract, preemptive_seconds)
 
-    def contract_label(self, contract_id):
+    def contract_label(self, contract_id, include_id=True):
         if contract_id in self.all_contracts:
-            return f"{contract_id}-{self.all_contracts[contract_id]['label']}"
+            if include_id:
+                return f"{contract_id}-{self.all_contracts[contract_id]['label']}"
+            else:
+                return self.all_contracts[contract_id]['label']
         return None
 
     def get_filtered_contracts(self, **kwargs):
@@ -1295,17 +1298,17 @@ class MarketState:
                     self.accounts[balance] = dict()
                 self.accounts[balance][asset] = val
 
-    def get_available(self, asset):
+    def get_available(self, asset, account='available_balances'):
         """available balance in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)"""
-        if 'available_balances' not in self.accounts:
+        if account not in self.accounts:
             logger.warning(f"No available balances in accounts!!")
             return None
-        avail = self.accounts['available_balances']
+        avail = self.accounts[account]
         if asset not in avail:
             logger.warning(f"No {asset} in balances {self.accounts}")
             return None
         x = avail[asset] / self.asset_units[asset]
-        logger.info(f"available {asset}={x}")
+        logger.info(f"{account} {asset}={x}")
         return x
 
     def have_available(self, asset, amount):
