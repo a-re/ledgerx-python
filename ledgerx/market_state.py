@@ -313,6 +313,24 @@ class MarketState:
                 return self.all_contracts[contract_id]['label']
         return None
 
+    def short_label(self, contract_id):
+        contract = self.get_contract(contract_id)
+        exp_str = contract['date_expires']
+        short_exp = exp_str.split(' ')[0]
+        asset = contract['underlying_asset']
+        if asset == 'CBTC':
+            asset = 'BTC'
+        if contract['derivative_type'] == 'options_contract':
+            strike = contract['strike_price'] // self.conv_usd
+            return f"{short_exp} {contract['type']} {asset} ${strike/1000.0:.1f}K"
+        elif contract['derivative_type'] == 'day_ahead_swap':
+            return f"{short_exp} swap {asset}"
+        elif contract['derivative_type'] == 'future_contract':
+            return f"{short_exp} fut {asset}"
+        else:
+            return None
+
+
     def get_filtered_contracts(self, **kwargs):
         """Returns a list of contracts filtered by any key-value in a contract"""
         return_contracts = []
@@ -1329,7 +1347,7 @@ class MarketState:
         if expiring, instead calculate what happens if it expires worthless
         if assigning, instead calculate what happens if it expires exercised
         """
-        logger.info(f"getting delta available assets: {contract_id}, {is_ask}, {price}, {size}, {expiring}, {assigning}")
+        logger.debug(f"getting delta available assets: {contract_id}, {is_ask}, {price}, {size}, {expiring}, {assigning}")
         if assigning:
             assert(not expiring)
         else:
@@ -1341,21 +1359,26 @@ class MarketState:
         assert(contract is not None)
         multiplier = contract['multiplier']
         derivative_type = contract['derivative_type']
+
+        # init to 0
         delta_assets = dict()
+        collateral_asset = contract['collateral_asset']
+        delta_assets[collateral_asset] = 0
+        if collateral_asset != 'USD':
+            delta_assets['USD'] = 0
         
         # account for premium and fees
         if expiring or assigning:
-            delta_assets["USD"] = 0 # no purchase / sale price or fee
+            pass # no purchase / sale price or fee
         else:
-            delta_assets["USD"] = - MarketState.fee(price, size, derivative_type == 'options_contract')
+            delta_assets["USD"] -= MarketState.fee(price, size, derivative_type == 'options_contract')
             delta_assets["USD"] += price * size / multiplier * (1 if is_ask else -1) # sales net positive
 
         position = self.get_my_position(contract_id)
         if position is None:
             position = 0
-        collateral_asset = contract['collateral_asset']
-        delta_assets[collateral_asset] = 0
-        logger.info(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
+        
+        logger.debug(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
 
         if is_ask:
             # selling

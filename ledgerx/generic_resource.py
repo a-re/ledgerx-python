@@ -42,7 +42,7 @@ class GenericResource:
         json_data = cls.list(url, params, include_api_key)
         elements.extend(json_data["data"])
         fetches = 1
-
+        # FIXME there may be a race if total_count changes while retrieving pages
         while has_next_url(json_data):
             if max_fetches > 0 and fetches >= max_fetches:
                 break
@@ -65,7 +65,7 @@ class GenericResource:
         json_data = cls.list(url, params, include_api_key=include_api_key)
         callback(json_data["data"])
         fetches = 1
-
+        # FIXME there may be a race if total_count changes while retrieving pages
         while has_next_url(json_data):
             if max_fetches > 0 and fetches >= max_fetches:
                 break
@@ -79,7 +79,7 @@ class GenericResource:
         logger.info(f"next_url: {next_url} {params}")
         res = await HttpClient.async_get(next_url, params, include_api_key)
         json_data = await res.json()
-        logger.debug(f"next {next_url} got {res} {json_data}")
+        logger.info(f"next {next_url} got {res} {json_data['meta']} with {len(json_data['data'])} records")
         return json_data
 
     @classmethod

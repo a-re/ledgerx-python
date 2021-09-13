@@ -147,7 +147,7 @@ class BraveCache:
     
     @classmethod
     def store_cached_results(cls, asset, resolution, brave_results):
-        logger.info(f"brave list({asset}, {resolution}) returned keys={brave_results.keys()} ['data']={brave_results['data']}")
+        logger.info(f"brave list({asset}, {resolution}) returned keys={brave_results.keys()} ['data']={len(brave_results['data'])}")
         brave = None
         if asset == "CBTC":
             asset = "BTC"

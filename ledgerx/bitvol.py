@@ -147,7 +147,7 @@ class BitvolCache:
     
     @classmethod
     def store_cached_results(cls, asset, resolution, bitvol_results):
-        logger.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={bitvol_results['data']}")
+        logger.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={len(bitvol_results['data'])}")
         bitvol = None
         if asset == "CBTC":
             asset = "BTC"
