@@ -1,44 +1,19 @@
 import logging
 import logging.handlers
-import gzip
-import os
 import asyncio
 import concurrent.futures
 import websockets
 import json
 from time import sleep
-from multiprocessing import AuthenticationError,Process
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Listener
 import datetime as dt
+from ledgerx.log_rotator import GZipRotator
 
 from ledgerx.util import gen_websocket_url
 import ledgerx
 
 logger = logging.getLogger(__name__)
-
-class GZipRotator:
-    old_p = None
-    def mp__call__(self, dest):
-        logger.info(f"Starting compression of {dest}")
-        f_in = open(dest, 'rb')
-        f_out = gzip.open("%s.gz" % dest, 'wb')
-        f_out.writelines(f_in)
-        f_out.close()
-        f_in.close()
-        os.remove(dest)
-        logger.info(f"Completed rotation to {dest}.gz")
-
-    def __call__(self, source, dest):
-        logger.info(f"rotating logs from {source} to {dest}")
-        if self.old_p is not None:
-            logger.info(f"joining old compression proc={self.old_p}")
-            self.old_p.join()
-            self.old_p = None
-        os.rename(source, dest)
-        p = Process(target=self.mp__call__, args=(dest,))
-        p.start()
-        self.old_p = p
-        logger.info(f"running compression in proc={p}")
 
 
 class WebSocket:
@@ -57,15 +32,8 @@ class WebSocket:
     @classmethod
     def init_ws_logger(cls):
         if cls.ws_logger is None:
-            formatter = logging.Formatter('%(asctime)s\t%(message)s')
-            ws_log = logging.handlers.TimedRotatingFileHandler('ledgerx-logs/websocket.log', when='H')
-            ws_log.setFormatter(formatter)
-            ws_log.rotator = GZipRotator()
-            ws_log.setLevel(logging.DEBUG)
-            ws_logger = logging.getLogger(f'{__name__}.websocket')
-            ws_logger.setLevel(logging.DEBUG)
-            ws_logger.addHandler(ws_log)
-            cls.ws_logger = ws_logger
+            log_logger = logging.getLogger(f'{__name__}.websocket')
+            cls.ws_logger = GZipRotator.getLogger(log_logger, filename='ledgerx-logs/websocket.log', format='%(asctime)s\t%(message)s', level=logging.DEBUG)
         return cls.ws_logger
 
     def __init__(self):
