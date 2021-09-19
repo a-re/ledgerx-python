@@ -1326,7 +1326,7 @@ class MarketState:
             logger.warning(f"No {asset} in balances {self.accounts}")
             return None
         x = avail[asset] / self.asset_units[asset]
-        logger.info(f"{account} {asset}={x}")
+        logger.debug(f"{account} {asset}={x}")
         return x
 
     def have_available(self, asset, amount):
@@ -1352,6 +1352,13 @@ class MarketState:
             assert(not expiring)
         else:
             assert(not assigning)
+                
+        # init to 0
+        delta_assets = dict(USD=0)
+        if price is None or size is None:
+            logger.info(f"No price {price} or size {size} for {contract_id}, so no delta will be provided.")
+            return delta_assets
+        
         assert(size > 0)
         assert(price > 0)
         contract = self.get_contract(contract_id)
@@ -1359,13 +1366,8 @@ class MarketState:
         assert(contract is not None)
         multiplier = contract['multiplier']
         derivative_type = contract['derivative_type']
-
-        # init to 0
-        delta_assets = dict()
         collateral_asset = contract['collateral_asset']
         delta_assets[collateral_asset] = 0
-        if collateral_asset != 'USD':
-            delta_assets['USD'] = 0
         
         # account for premium and fees
         if expiring or assigning:
