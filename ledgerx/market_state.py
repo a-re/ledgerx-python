@@ -1355,7 +1355,7 @@ class MarketState:
                 
         # init to 0
         delta_assets = dict(USD=0)
-        if price is None or size is None:
+        if price is None or size is None or size == 0:
             logger.info(f"No price {price} or size {size} for {contract_id}, so no delta will be provided.")
             return delta_assets
         
