@@ -159,6 +159,16 @@ class MarketState:
             self.to_update_basis[contract_id] = position
         return position['size']
 
+    def get_my_position_basis(self, contract_id):
+        if contract_id not in self.contract_positions:
+            return None
+        position = self.contract_positions[contract_id]
+        if 'id' not in position or 'basis' not in position:
+            self.to_update_basis[contract_id] = position
+            return None
+        else:
+            return position['basis']
+
     def cost_to_close(self, contract_id):
         "returns dict(low, high, net, basis, cost, ask, bid, size)"
         logger.debug(f"getting cost to close for {contract_id}")
@@ -272,6 +282,12 @@ class MarketState:
         if now is None:
             now = dt.datetime.now(MarketState.timezone)
         exp_str = contract['date_expires']
+        return MarketState.get_t(exp_str, now)
+
+    @staticmethod
+    def get_t(exp_str:str, now:dt.datetime=None):
+        if now is None:
+            now = dt.datetime.now(MarketState.timezone)
         exp = dt.datetime.strptime(exp_str, MarketState.strptime_format)
         t_sec = (exp - now).total_seconds()
         t = t_sec / MarketState.seconds_per_year
@@ -2123,6 +2139,8 @@ class MarketState:
         futures = []
         futures.append( await loop.run_in_executor(executor, self.load_latest_trades) )
         futures.append( await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port) )
+        futures.append( BitvolCache.async_get_bitvol(asset='CBTC') )
+        futures.append( BitvolCache.async_get_bitvol(asset='ETH') )
         task3 = None
         if bot_runner is not None:
             futures.append( await loop.run_in_executor(executor, bot_runner.run) )

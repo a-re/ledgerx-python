@@ -174,6 +174,7 @@ class BitvolCache:
 
     @classmethod
     async def async_get_bitvol(cls, asset, resolution = "1W", timeout = 120):
+        logger.info(f"Getting bitvol for {asset}")
         bitvol = cls.get_cached_bitvol(asset, resolution, timeout)
         if bitvol is None:
             bitvol_results = await Bitvol.async_list(dict(asset=asset, resolution=resolution))
