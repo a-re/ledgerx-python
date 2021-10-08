@@ -105,10 +105,14 @@ class BitvolCache:
 
     @classmethod
     def to_time(cls, then):
-        if '.' in then:
-            then = dt.datetime.strptime(then, cls.timefmt_ms)
-        else:
-            then = dt.datetime.strptime(then, cls.timefmt)
+        try:
+            then = dt.datetime.fromisoformat(then)
+        except:
+            logger.warning(f"Did not parse isoformat of {then} trying {cls.timefmt}")
+            if '.' in then:
+                then = dt.datetime.strptime(then, cls.timefmt_ms)
+            else:
+                then = dt.datetime.strptime(then, cls.timefmt)
         return then
 
     @classmethod
