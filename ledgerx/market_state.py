@@ -42,6 +42,8 @@ class MarketState:
         self.handle_counts = dict()
         self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
         self.all_transactions = dict()        # transaction_id : transaction_json
+        self.asyncio_heartbeat_queue = []     # actions to at least start by the next heartbeat
+        self.asyncio_heartbeat_queue2 = []    # actions to block until complete by the next heartbeat
         self.clear()
         logger.info(f"MarketState constructed {self}")
         
@@ -75,6 +77,8 @@ class MarketState:
         self.skip_expired = True              # if expired contracts should be ignored (for positions and cost-basis)
         self.last_heartbeat = None            # the last heartbeat - to detect restarts and network issue
         self.my_out_of_order_orders = dict()  # *sometimes* my orders (with mpid) comes before the others, stash it for later here
+
+
 
     def mid(self, bid, ask):
         if bid is None and ask is None:
@@ -722,9 +726,14 @@ class MarketState:
                     if order['is_ask']:
                         # sold
                         position['size'] -= delta_pos
+                        if 'basis' in position:
+                            position['basis'] += delta_pos * order['filled_price'] / contract['multiplier']
                     else:
                         position['size'] += delta_pos
-                
+                        if 'basis' in position:
+                            position['basis'] -= delta_pos * order['filled_price'] / contract['multiplier']
+                    # update basis to get fee/rebates, but wait 5 heartbeats for eventually consistant API
+                    self.add_await_at_heartbeat_delayed( 5, self.async_update_position, (contract_id, position) )
             self.replace_existing_order(order)
             self.handle_trade(order)
 
@@ -1559,6 +1568,47 @@ class MarketState:
             else:
                 await self.load_remaining_books()
 
+        await self.await_at_heartbeat()
+
+    def add_await_at_heartbeat(self, awaitable):
+        self.asyncio_heartbeat_queue.append( awaitable )
+
+    async def async_add_await_helper(self, delay:int, async_callable, call_args):
+        if delay is None or delay <= 0:
+            logger.info(f"Calling {async_callable}")
+            return await async_callable(*call_args)
+        else:
+            await asyncio.sleep(0.001)
+            logger.info(f"Delaying by {delay} {async_callable} {call_args}")
+            return await self.async_add_await_helper(delay-1, async_callable, call_args)
+
+    def add_await_at_heartbeat_delayed(self, delay:int, async_callable, call_args):
+        self.asyncio_heartbeat_queue.append( self.async_add_await_helper(delay, async_callable, call_args) )
+
+    async def await_at_heartbeat(self):
+        task = None
+        copy = self.asyncio_heartbeat_queue
+        self.asyncio_heartbeat_queue = []
+        if len(copy) > 0:
+            logger.info(f"Gathering {len(copy)} awaitables for the next heartbeat")
+            task = asyncio.gather( *copy )
+        if len(self.asyncio_heartbeat_queue2) > 0:
+            copy2 = self.asyncio_heartbeat_queue2
+            self.asyncio_heartbeat_queue2 = []
+            logger.info(f"waiting for {len(copy2)} awaitables to complete")
+            await asyncio.gather( *copy2 )
+            logger.info(f"Done waiting for {len(copy2)} awaitables to complete")
+        if task is not None:
+            try:
+                logger.info(f"Trying gathered {len(copy)} awaitables")
+                await asyncio.wait_for( asyncio.shield(task), 0.01)
+                logger.info(f"Done waiting for {len(copy)} awaitables")
+            except asyncio.TimeoutError:
+                logger.info(f"timeout for {len(copy)} tasks which will wait for the next heartbeat")
+                self.asyncio_heartbeat_queue2.append(task)
+        return len(self.asyncio_heartbeat_queue) + len(self.asyncio_heartbeat_queue2)
+
+
     # returns True for a unique report, False for a duplicate
     async def action_report_action(self, action, ignore_out_of_order:bool = False) -> bool:
         logger.debug(f"ActionReport {action}")
@@ -1816,7 +1866,7 @@ class MarketState:
                 self.to_update_basis[contract_id] = pos
 
     async def async_update_position(self, contract_id, position = None):
-        logger.info(f"async update positions {contract_id} {position}")
+        logger.info(f"async update position {contract_id} {position}")
         if position is None or 'id' not in position:
             await self.async_update_all_positions()
             position = self.contract_positions[contract_id]
@@ -1864,6 +1914,11 @@ class MarketState:
     
     async def load_market(self):
         logger.info(f"Loading the Market")
+        # wait for any pending heartbeat actions
+        test = None
+        while test != 0:
+            logger.info(f"Waiting for {test} pending heartbeat awaiables")
+            test = await self.await_at_heartbeat()
         self.clear()
         self.is_active = False
 
