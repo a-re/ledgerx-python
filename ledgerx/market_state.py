@@ -661,7 +661,7 @@ class MarketState:
             contract_clock = self.contract_clock[contract_id]
 
         filled_str = '' if 'filled_size' not in order or order['filled_size'] == 0 else f" filled={order['filled_size']}"
-        logger.info(f"order: {contract_id} clock={order_clock} cc={contract_clock} status={status} is_my_order={is_my_order}/{'mpid' in order} mid={mid} price={order['price']} size={order['size']} is_ask={order['is_ask']}{filled_str}")
+        logger.debug(f"order: {contract_id} clock={order_clock} cc={contract_clock} status={status} is_my_order={is_my_order}/{'mpid' in order} mid={mid} price={order['price']} size={order['size']} is_ask={order['is_ask']}{filled_str}")
         
         if order_clock <= contract_clock and is_my_order and 'mpid' not in order:
             logger.info(f"Skipping old and duplicate instance of MY order {mid} status={status}")
@@ -979,7 +979,7 @@ class MarketState:
         return top_book_states
 
     def get_market_book_order_price(self, contract_id:int, is_ask=bool, size:int=1, margin:int=0):
-        """Returns the market price for an is_ask order to trade size contracts which are currently on the books"""
+        """Returns the market price for an is_ask (i.e True==Sell) order to immediately trade size contracts which are currently on the books"""
         if contract_id in self.book_states:
             books = self.book_states[contract_id]
             offers = []
@@ -1912,6 +1912,12 @@ class MarketState:
             num += 1
         logger.info(f"Found {num} of MY open orders")
     
+    def is_ready(self):
+        if self.is_active and self.action_queue is None:
+            return
+        logger.warning(f"MarketState is NOT ready is_active={self.is_active} pending={len(self.action_queue)}")
+        return False
+    
     async def load_market(self):
         logger.info(f"Loading the Market")
         # wait for any pending heartbeat actions
@@ -1919,6 +1925,7 @@ class MarketState:
         while test != 0:
             logger.info(f"Waiting for {test} pending heartbeat awaiables")
             test = await self.await_at_heartbeat()
+        await self.async_pending_books()
         self.clear()
         self.is_active = False
 
@@ -2168,18 +2175,28 @@ class MarketState:
                 for contract_id in union_to_update:
                     if contract_id not in self.contract_clock or self.contract_clock[contract_id] != -2:
                         futures.append(self.async_load_books(contract_id))
-
-        for contract_id, async_fut in self.async_reloading_books.items():
-            futures.append( async_fut )
-        self.async_reloading_books.clear()
+    
 
         if len(futures) > 0:
             await asyncio.gather( *futures )
             logger.info(f"Done updating {len(futures)} stale positions and books")
+        
+        await self.async_pending_books()
 
         if started_queue:
             await self.handle_queued_actions()
+            
+    async def async_pending_books(self):
+        futures = []
+        temp = self.async_reloading_books.copy()
+        self.async_reloading_books.clear()
+        for contract_id, async_fut in temp.items():
+            futures.append( async_fut )
 
+        if len(futures) > 0:
+            await asyncio.gather( *futures )
+        temp.clear()
+            
     def disconnect(self):
         logger.info("Disconnecting websocket")
         self.is_active = False
