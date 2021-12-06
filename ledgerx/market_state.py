@@ -42,7 +42,7 @@ class MarketState:
         self.handle_counts = dict()
         self.brave = dict()                   # last brave (BLX) market feed dict(asset: {asset=,price=,volume=tickVolume=time=})
         self.all_transactions = dict()        # transaction_id : transaction_json
-        self.asyncio_heartbeat_queue = []     # actions to at least start by the next heartbeat
+        self.asyncio_heartbeat_queue = []     # actions to at least start by the next heartbeat -- List of (delay, awaitable)
         self.asyncio_heartbeat_queue2 = []    # actions to block until complete by the next heartbeat
         self.clear()
         logger.info(f"MarketState constructed {self}")
@@ -722,18 +722,19 @@ class MarketState:
 
                 if contract_id in self.contract_positions:
                     position = self.contract_positions[contract_id]
-                    logger.info(f"Changing by {delta_pos} position on {self.contract_label(contract_id)} from {position}")
+                    logger.info(f"Changing by {'-' if order['is_ask'] else '+'}{delta_pos} position on {self.contract_label(contract_id)} from {position}")
                     if order['is_ask']:
                         # sold
                         position['size'] -= delta_pos
                         if 'basis' in position:
-                            position['basis'] += delta_pos * order['filled_price'] / contract['multiplier']
+                            position['basis'] += delta_pos * order['filled_price'] / contract['multiplier'] - MarketState.fee(order['filled_price'], delta_pos, contract['derivative_type'] == 'options_contract')
                     else:
                         position['size'] += delta_pos
                         if 'basis' in position:
-                            position['basis'] -= delta_pos * order['filled_price'] / contract['multiplier']
-                    # update basis to get fee/rebates, but wait 5 heartbeats for eventually consistant API
-                    self.add_await_at_heartbeat_delayed( 5, self.async_update_position, (contract_id, position) )
+                            position['basis'] -= delta_pos * order['filled_price'] / contract['multiplier'] + MarketState.fee(order['filled_price'], delta_pos, contract['derivative_type'] == 'options_contract')
+                    if 'basis' not in position:
+                        # update basis to get fee/rebates, but wait 15 heartbeats for eventually consistant API
+                        self.add_await_at_heartbeat_delayed( 15, self.async_update_position, (contract_id, position) )
             self.replace_existing_order(order)
             self.handle_trade(order)
 
@@ -1278,7 +1279,7 @@ class MarketState:
         logger.info(f"Positions {action}")
         assert(action['type'] == 'open_positions_update')
         assert('positions' in action)
-        update_basis = []
+        to_update_basis = dict()
         update_all = []
         futures = []
         if 'positions' not in action or len(action['positions']) == 0:
@@ -1297,7 +1298,7 @@ class MarketState:
                 if 'id' not in contract_position:
                     update_all.append(contract_id)
                 elif position['size'] != contract_position['size'] or 'basis' not in contract_position:
-                    update_basis.append(contract_id)
+                    to_update_basis[contract_id] = position
                 for field in ['exercised_size', 'size']:
                     contract_position[field] = position[field]
             elif position['size'] != 0 or position['exercised_size'] != 0:
@@ -1315,16 +1316,14 @@ class MarketState:
                     future = self.async_update_position(contract_id)
                     futures.append(future)
             if needs_all:
-                logger.warning(f"Need all positions refreshed")
-                future = self.async_update_all_positions()
-                futures.append(future)
-                
-        if len(update_basis) > 0:
-            logger.info(f"Getting updated basis for these contracts {update_basis}")
-            
-            for contract_id in update_basis:
-                future = self.async_update_position(contract_id, self.contract_positions[contract_id])
-                futures.append(future)
+                logger.warning(f"Need all positions refreshed at next next heartbeat")
+                self.add_await_at_heartbeat_delayed(2, self.async_update_all_positions)
+                #future = self.async_update_all_positions()
+                #futures.append(future)
+        
+        for contract_id, position in to_update_basis.items():    
+            logger.info(f"Getting updated basis for {contract_id} {position} after 10s for eventual consistency")
+            self.add_await_at_heartbeat_delayed( 10, self.async_update_position, (contract_id, position) )
 
         if len(futures) > 0:
             await asyncio.gather( *futures )
@@ -1570,8 +1569,8 @@ class MarketState:
 
         await self.await_at_heartbeat()
 
-    def add_await_at_heartbeat(self, awaitable):
-        self.asyncio_heartbeat_queue.append( awaitable )
+    def add_await_at_heartbeat(self, awaitable, delay=0):
+        self.asyncio_heartbeat_queue.append( (awaitable, delay) )
 
     async def async_add_await_helper(self, delay:int, async_callable, call_args):
         if delay is None or delay <= 0:
@@ -1583,12 +1582,22 @@ class MarketState:
             return await self.async_add_await_helper(delay-1, async_callable, call_args)
 
     def add_await_at_heartbeat_delayed(self, delay:int, async_callable, call_args):
-        self.asyncio_heartbeat_queue.append( self.async_add_await_helper(delay, async_callable, call_args) )
+        logger.info(f"Delaying by {delay} heartbeats {async_callable} {call_args}")
+        self.asyncio_heartbeat_queue.append( (self.async_add_await_helper(0, async_callable, call_args), delay) )
 
     async def await_at_heartbeat(self):
         task = None
-        copy = self.asyncio_heartbeat_queue
+        tmpcopy = self.asyncio_heartbeat_queue
         self.asyncio_heartbeat_queue = []
+        copy = []
+        for await_delay_tuple in tmpcopy:
+            awaitable,delay = await_delay_tuple
+            if delay <= 0:
+                copy.append(awaitable)
+            else:
+                # decrement delay by 1 heartbeat
+                self.asyncio_heartbeat_queue.append( (awaitable, delay-1) )
+        tmpcopy = None
         if len(copy) > 0:
             logger.info(f"Gathering {len(copy)} awaitables for the next heartbeat")
             task = asyncio.gather( *copy )
@@ -1601,7 +1610,7 @@ class MarketState:
         if task is not None:
             try:
                 logger.info(f"Trying gathered {len(copy)} awaitables")
-                await asyncio.wait_for( asyncio.shield(task), 0.01)
+                await asyncio.wait_for( asyncio.shield(task), 0.02)
                 logger.info(f"Done waiting for {len(copy)} awaitables")
             except asyncio.TimeoutError:
                 logger.info(f"timeout for {len(copy)} tasks which will wait for the next heartbeat")
@@ -1801,23 +1810,28 @@ class MarketState:
         logger.debug(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
         pos = 0
         basis = 0
+        trades.reverse() # put in chronological order
         for trade in trades:
             logger.info(f"contract {contract_id} trade {trade}")
             assert(contract_id == int(trade["contract_id"]))
             if trade["side"] == "bid":
                 # bought so positive basis and position delta
-                basis += trade["fee"] - trade["rebate"] + trade["premium"]
+                basis += int(trade["fee"]) - int(trade["rebate"]) + int(trade["premium"])
                 pos += int(trade["filled_size"])
             else:
                 assert(trade["side"] == "ask")
                 # sold, so negative basis and negative position delta
                 basis += int(trade["fee"]) - int(trade["rebate"]) - int(trade["premium"])
                 pos -= int(trade["filled_size"])
+            if pos == 0:
+                logger.info(f"Zeroed position, so reset basis from {basis}")
+                basis = 0
         logger.debug(f"final pos {pos} basis {basis} position {position}")
 
         if pos != position['size']:
-            logger.warning(f"update to position did not yield pos={pos} {position}, updating them all")
-            self.update_all_positions()
+            logger.warning(f"update to position did not yield pos={pos} {position}, updating them all in 10 heartbeats")
+            self.add_await_at_heartbeat_delayed(10, self.async_update_basis, (contract_id,position))
+            #self.update_all_positions() # fixme add heartbeat delay
             return
 
         if pos < 0 and position["type"] == "long":
@@ -1846,7 +1860,7 @@ class MarketState:
         all_positions = ledgerx.Positions.list_all()
         self.process_all_positions(all_positions)
 
-    def process_all_positions(self, all_positions):
+    def process_all_positions(self, all_positions): # FIXME FOR eventually consistency!!!!
         logger.info(f"Processing {len(all_positions)} positions")
         for pos in all_positions:
             assert('id' in pos and 'contract' in pos)
@@ -1862,12 +1876,13 @@ class MarketState:
                 if self.skip_expired:
                     if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
                         continue
-                logger.info(f"position for {contract_id} {contract['label']} is missing basis or changed {pos}")
+                logger.info(f"position for {contract_id} {contract['label']} is missing basis or changed {pos} old_pos={old_pos}/")
                 self.to_update_basis[contract_id] = pos
 
     async def async_update_position(self, contract_id, position = None):
         logger.info(f"async update position {contract_id} {position}")
         if position is None or 'id' not in position:
+            logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
             await self.async_update_all_positions()
             position = self.contract_positions[contract_id]
             logger.info(f"updated position for {contract_id} is now {position}")
