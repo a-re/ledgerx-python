@@ -56,6 +56,7 @@ class MarketState:
         self.traded_contract_ids = dict()     # dict (contract_id: traded-contract)
         self.expired_contracts = dict()       # dict (contract_id: expired-contract)
         self.contract_positions = dict()      # my positions by contract (no lots) dict(contract_id: position)
+        self.pending_position_updates = False # Flag to avoid multiple calls
         self.exp_dates = list()               # sorted list of all expiration dates in the market
         self.exp_strikes = dict()             # dict(exp_date : dict(asset: [sorted list of strike prices (int)]))
         self.my_orders = set()                # just the mids of my orders
@@ -1317,7 +1318,11 @@ class MarketState:
                     futures.append(future)
             if needs_all:
                 logger.warning(f"Need all positions refreshed at next next heartbeat")
-                self.add_await_at_heartbeat_delayed(2, self.async_update_all_positions)
+                if not self.pending_position_updates:
+                    self.pending_position_updates = True
+                    self.add_await_at_heartbeat_delayed(2, self.async_update_all_positions)
+                else:
+                    logger.info(f"all position updates are already pending")
                 #future = self.async_update_all_positions()
                 #futures.append(future)
         
@@ -1862,6 +1867,7 @@ class MarketState:
 
     def process_all_positions(self, all_positions): # FIXME FOR eventually consistency!!!!
         logger.info(f"Processing {len(all_positions)} positions")
+        self.pending_position_updates = False
         for pos in all_positions:
             assert('id' in pos and 'contract' in pos)
             contract = pos['contract']
@@ -1883,7 +1889,11 @@ class MarketState:
         logger.info(f"async update position {contract_id} {position}")
         if position is None or 'id' not in position:
             logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
-            await self.async_update_all_positions()
+            if not self.pending_position_updates:
+                self.pending_position_updates = True
+                await self.async_update_all_positions()
+            else:
+                logger.info(f"all position updates are already pending")
             position = self.contract_positions[contract_id]
             logger.info(f"updated position for {contract_id} is now {position}")
         else:
@@ -1900,7 +1910,11 @@ class MarketState:
             position = self.contract_positions[contract_id]
         if position is None or 'id' not in position:
             logger.warning(f"listing all positions as it is missing for {contract_id}")
-            self.update_all_positions()
+            if not self.pending_position_updates:
+                self.pending_position_updates = True
+                self.update_all_positions()
+            else:
+                logger.info(f"all position updates are already pending")
             if contract_id not in self.contract_positions:
                 logger.warning(f"After updating all, still could not find a position for {contract_id}")
                 return
