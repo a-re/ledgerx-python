@@ -49,11 +49,12 @@ class WebSocket:
         except:
             logger.exception(f"websocket teardown threw an exception!")
         finally:
-            logger.info(f"Destroyed Websocket {self}")
+            sleep(0.01)
+            logger.info(f"Destroyed Websocket {self}") # FIXME interferes with log on line 56
 
     def clear(self):
         if self.connection is not None:
-            logger.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}")
+            logger.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}") # FIXME interferes with log on line 52
         self.connection = None
         self.update_callbacks = list()
         #self.run_id = None
