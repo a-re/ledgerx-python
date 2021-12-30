@@ -1815,22 +1815,58 @@ class MarketState:
         logger.debug(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
         pos = 0
         basis = 0
-        trades.reverse() # put in chronological order
+        net_basis = 0
+        basis_price = 0
+        net_basis_price = 0
+        # TODO use sided basis where profits do not count until realized
+        # fully closing the position resets all basis tracking
+        # basis / pos should be avg_basis for the side, not overall basis including partial closings
+        trades.reverse() # use chronological order
         for trade in trades:
             logger.info(f"contract {contract_id} trade {trade}")
             assert(contract_id == int(trade["contract_id"]))
+            num = int(trade["filled_size"])
+            delta = int(trade["fee"]) - int(trade["rebate"]) # paid the fee received the rebate
+            prev_pos = pos
             if trade["side"] == "bid":
-                # bought so positive basis and position delta
-                basis += int(trade["fee"]) - int(trade["rebate"]) + int(trade["premium"])
-                pos += int(trade["filled_size"])
+                # bought so positive delta
+                delta += int(trade["premium"]) # paid the premium
+                assert(delta > 0)
+                net_basis += delta
+                if pos >= 0:
+                    # is closed or long
+                    assert(basis >= 0)
+                    basis += delta # stack onto the existing basis
+                else:
+                    # is short, so closing
+                    assert(basis < 0)
+                    basis -= abs(num/pos) * basis # subtract some by the avg basis which is negative
+                pos += num
             else:
                 assert(trade["side"] == "ask")
                 # sold, so negative basis and negative position delta
-                basis += int(trade["fee"]) - int(trade["rebate"]) - int(trade["premium"])
-                pos -= int(trade["filled_size"])
-            if pos == 0:
-                logger.info(f"Zeroed position, so reset basis from {basis}")
-                basis = 0
+                delta -= int(trade["premium"]) # received the premium
+                assert(delta < 0)
+                net_basis += delta
+                if pos <= 0:
+                    # is closed or short
+                    assert(basis <= 0)
+                    basis += delta # stack onto the existing (negative) basis with (negative) delta
+                else:
+                    # is long, so closing
+                    assert(basis > 0)
+                    basis -= abs(num/pos) * basis # subtract some of the avg basis which is positive
+                pos -= num
+            if pos == 0 or (prev_pos < 0 and pos > 0) or (prev_pos > 0 and pos < 0):
+                logger.info(f"Zeroed position, so reset basis from basis={basis} net_basis={net_basis}")
+                if pos == 0:
+                    basis = 0
+                else:
+                    basis = abs(pos / num) * delta # set a new avg basis
+            basis_price = 0 if pos == 0 else contract['multiplier'] * basis / pos / MarketState.conv_usd
+            net_basis_price = 0 if pos == 0 else contract['multiplier'] * net_basis / pos / MarketState.conv_usd
+            logger.debug(f"new basis: {contract_id} pos={pos} basis={basis} net_basis={net_basis} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f} num={num} delta={delta}")
+                
         logger.debug(f"final pos {pos} basis {basis} position {position}")
 
         if pos != position['size']:
@@ -1847,12 +1883,13 @@ class MarketState:
             position["type"] = "long"
 
         position['basis'] = basis # basis is in usd_units
+        position['net_basis'] = net_basis # net over all trades in the contract
         cost = basis / MarketState.conv_usd
         self.contract_positions[contract_id] = position
         if contract_id in self.to_update_basis:
             del self.to_update_basis[contract_id]
 
-        logger.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC ${cost} -- {self.contract_label(contract_id)}")
+        logger.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC basis=${cost:0.0f} net_basis=${net_basis/MarketState.conv_usd:0.0f} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f}-- {self.contract_label(contract_id)}")
         
 
     async def async_update_all_positions(self):
