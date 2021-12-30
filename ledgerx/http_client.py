@@ -41,7 +41,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
@@ -76,7 +76,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
@@ -113,7 +113,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 sleep(delay)
             else:
@@ -166,7 +166,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
@@ -201,7 +201,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
@@ -236,7 +236,7 @@ class HttpClient:
                 else:
                     delay *= 2.0
                 if delay > 10:
-                    delay = 10
+                    delay += DELAY_SECONDS + 1
                 logger.info(f"Got 429, delaying {delay}s before retry of url: {url}")
                 await asyncio.sleep(delay)
             else:
