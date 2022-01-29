@@ -728,14 +728,14 @@ class MarketState:
                         # sold
                         position['size'] -= delta_pos
                         if 'basis' in position:
-                            position['basis'] += delta_pos * order['filled_price'] / contract['multiplier'] - MarketState.fee(order['filled_price'], delta_pos, contract['derivative_type'] == 'options_contract')
+                            position['basis'] -= delta_pos * order['filled_price'] / contract['multiplier'] # estimated no fees/rebates
                     else:
                         position['size'] += delta_pos
                         if 'basis' in position:
-                            position['basis'] -= delta_pos * order['filled_price'] / contract['multiplier'] + MarketState.fee(order['filled_price'], delta_pos, contract['derivative_type'] == 'options_contract')
-                    if 'basis' not in position:
-                        # update basis to get fee/rebates, but wait 15 heartbeats for eventually consistant API
-                        self.add_await_at_heartbeat_delayed( 15, self.async_update_position, (contract_id, position) )
+                            position['basis'] += delta_pos * order['filled_price'] / contract['multiplier'] # estimated no fees/rebates
+
+                    # update basis to get fee/rebates, but wait 15 heartbeats for eventually consistant API
+                    self.add_await_at_heartbeat_delayed( 15, self.async_update_position, (contract_id, position) )
             self.replace_existing_order(order)
             self.handle_trade(order)
 
