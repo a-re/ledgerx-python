@@ -44,17 +44,20 @@ class WebSocket:
         WebSocket.init_ws_logger()
 
     def __del__(self):
+        l = self.ws_logger if self.ws_logger is not None else logger
         try:
             self.clear()
         except:
-            logger.exception(f"websocket teardown threw an exception!")
+            l.exception(f"websocket teardown threw an exception!")
         finally:
-            sleep(0.01)
-            logger.info(f"Destroyed Websocket {self}") # FIXME interferes with log on line 56
-
+            print(f"Destroyed Websocket {self}") # logger.info  interferes with logger.warning in self.clear()
+            l.info("Destroyed Websocket {self}")
+            
     def clear(self):
+        l = self.ws_logger if self.ws_logger is not None else logger
+        l.info(f"Clearing websocket {self}")
         if self.connection is not None:
-            logger.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}") # FIXME interferes with log on line 52
+            l.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}") # interferes with log in __del__
         self.connection = None
         self.update_callbacks = list()
         #self.run_id = None
@@ -65,8 +68,9 @@ class WebSocket:
             try:
                 conn.close()
             except:
-                logger.exception(f"Could not close localhost connection: {conn}")
+                l.exception(f"Could not close localhost connection: {conn}")
         self.localhost_connections = []
+        
 
     def register_callback(self, callback):
         """A call back will get called for every message with a 'type' field"""
