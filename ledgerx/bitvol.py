@@ -3,6 +3,7 @@ from typing import List, Dict
 from ledgerx.http_client import HttpClient
 from ledgerx.util import gen_url
 import datetime as dt
+import time
 
 import logging
 
@@ -116,7 +117,7 @@ class BitvolCache:
         return then
 
     @classmethod
-    def get_cached_bitvol(cls, asset, resolution = "1W", timeout = 120):
+    def get_cached_bitvol(cls, asset, resolution = "1W", timeout = 3750):
         """Returns the cached value and None if the cache is empty or out of date"""
         if asset == "CBTC":
             asset = "BTC"
@@ -131,7 +132,8 @@ class BitvolCache:
             logger.info(f"No cache for {key} {cls.cache}")
         if bitvol is not None:
             then = cls.to_time(bitvol['time'])
-            if (now - then).total_seconds() > timeout:
+            if timeout is not None and (now - then).total_seconds() > timeout:
+                logger.info(f"Cache entry for {key} is too old {then} vs {now}")
                 bitvol = None
         return bitvol
     
@@ -168,21 +170,34 @@ class BitvolCache:
         logger.info(f"latest bitvol={bitvol}")
         return bitvol
 
+    getting_bitvol = dict()
     @classmethod
-    def get_bitvol(cls, asset, resolution = "1W", timeout = 120):
+    def get_bitvol(cls, asset, resolution = "1W", timeout = 3750):
         bitvol = cls.get_cached_bitvol(asset, resolution, timeout)
         if bitvol is None:
-            bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
-            bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
+            key = "-".join([asset, resolution])
+            now = dt.datetime.now(cls.timezone)
+            if key in cls.getting_bitvol and (now - cls.getting_bitvol[key]).total_seconds() < 30:
+                bitvol = cls.get_cached_bitvol(asset, resolution, None)
+            else:
+                cls.getting_bitvol[key] = now
+                bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
+                bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
         return None if bitvol is None else bitvol['value']
 
     @classmethod
-    async def async_get_bitvol(cls, asset, resolution = "1W", timeout = 120):
+    async def async_get_bitvol(cls, asset, resolution = "1W", timeout = 3750):
         logger.info(f"Getting bitvol for {asset}")
         bitvol = cls.get_cached_bitvol(asset, resolution, timeout)
         if bitvol is None:
-            bitvol_results = await Bitvol.async_list(dict(asset=asset, resolution=resolution))
-            bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
+            key = "-".join([asset, resolution])
+            now = dt.datetime.now(cls.timezone)
+            if key in cls.getting_bitvol and (now - cls.getting_bitvol[key]).total_seconds() < 30:
+                bitvol = cls.get_cached_bitvol(asset, resolution, None)
+            else:
+                cls.getting_bitvol[key] = now
+                bitvol_results = await Bitvol.async_list(dict(asset=asset, resolution=resolution))
+                bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
         return None if bitvol is None else bitvol['value']
 
       
