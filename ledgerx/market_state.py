@@ -719,7 +719,7 @@ class MarketState:
                 delta_basis = order['filled_size'] * order['filled_price']
                 divisor = contract['multiplier'] * MarketState.conv_usd
                 
-                logger.info(f"Observed {f'sale' if order['is_ask'] else 'purchase'} of {delta_pos} for ${delta_basis//divisor} on {contract_id} {label} {order}")
+                logger.info(f"Observed {f'sale' if order['is_ask'] else 'purchase'} of {delta_pos} for ${delta_basis/divisor:0.2f} on {contract_id} {label} {order}")
 
                 if contract_id in self.contract_positions:
                     position = self.contract_positions[contract_id]
