@@ -981,7 +981,9 @@ class MarketState:
         return top_book_states
 
     def get_market_book_order_price(self, contract_id:int, is_ask=bool, size:int=1, margin:int=0):
-        """Returns the market price for an is_ask (i.e True==Sell) order to immediately trade size contracts which are currently on the books"""
+        """Returns the market price for an is_ask order to immediately trade size contracts which are currently on the books
+        (i.e True==Sell, returning limit-bids on the books, False==Buy, returning limit-asks on the books) 
+        """
         if contract_id in self.book_states:
             books = self.book_states[contract_id]
             offers = []
@@ -1084,6 +1086,8 @@ class MarketState:
             logger.info(f"Added {len(book_states['book_states'])} open orders for {contract_id}")
         except:
             logger.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
+            if contract_id in self.contract_clock:
+                del self.contract_clock[contract_id]
  
     async def async_load_books(self, contract_id):
         logger.info(f"async loading books for {contract_id}")
@@ -1107,6 +1111,8 @@ class MarketState:
                 await self.handle_queued_actions()
         except:
             logger.exception(f"No book states for {contract_id}, perhaps it has (just) expired")
+            if contract_id in self.contract_clock:
+                del self.contract_clock[contract_id]
  
     async def async_load_all_books(self, contracts, max_parallel = 200):
         logger.info(f"loading all books for {len(contracts)} and max={max_parallel}")
@@ -1579,15 +1585,18 @@ class MarketState:
 
     async def async_add_await_helper(self, delay:int, async_callable, call_args):
         if delay is None or delay <= 0:
-            logger.info(f"Calling {async_callable}")
-            return await async_callable(*call_args)
+            logger.info(f"Calling {async_callable} {call_args}")
+            if call_args is not None:
+                return await async_callable(*call_args)
+            else:
+                return await async_callable()
         else:
             await asyncio.sleep(0.001)
             logger.info(f"Delaying by {delay} {async_callable} {call_args}")
             return await self.async_add_await_helper(delay-1, async_callable, call_args)
 
-    def add_await_at_heartbeat_delayed(self, delay:int, async_callable, call_args):
-        logger.info(f"Delaying by {delay} heartbeats {async_callable} {call_args}")
+    def add_await_at_heartbeat_delayed(self, delay:int, async_callable, call_args=None):
+        logger.info(f"Delaying by {delay} heartbeats {async_callable} call_args={call_args}")
         self.asyncio_heartbeat_queue.append( (self.async_add_await_helper(0, async_callable, call_args), delay) )
 
     async def await_at_heartbeat(self):
@@ -1742,6 +1751,27 @@ class MarketState:
             self.traded_contract_ids[contract_id] = self.all_contracts[contract_id]
             logger.debug(f"Traded {self.contract_label(contract_id)}")
         logger.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")
+        
+    async def async_set_traded_contracts(self):
+        # get the list of my traded contracts
+        # this may include inactive / expired contracts
+        skipped = 0
+        traded_contracts = await ledgerx.Contracts.async_list_all_traded()
+        logger.info(f"Got {len(traded_contracts)} traded_contracts")
+        for traded in traded_contracts:
+            logger.debug(f"traded {traded}")
+            contract_id = traded['id']
+            if self.skip_expired:
+                if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
+                    skipped += 1
+                    continue
+            if contract_id not in self.all_contracts:            
+                # look it up
+                contract = self.retrieve_contract(contract_id)
+                
+            self.traded_contract_ids[contract_id] = self.all_contracts[contract_id]
+            logger.debug(f"Traded {self.contract_label(contract_id)}")
+        logger.info(f"Done loading traded_contracts -- skipped {skipped} expired ones")        
         
     def add_transaction(self, transaction):
         logger.info(f"transaction: {transaction}")
@@ -2012,11 +2042,14 @@ class MarketState:
 
 
         self.reload_open_orders()
+        logger.info(f"Reloaded open orders")
 
         # load the set of contracts traded in my account
-        self.set_traded_contracts()
+        await self.async_set_traded_contracts()
+        logger.info("Set traded contracts")
 
         await self.async_load_positions_orders_and_books()
+        logger.info("awaited loading positions orders and books")
 
         self.is_active = True
         logger.info(f"Done loading the market")
@@ -2283,6 +2316,8 @@ class MarketState:
         if bot_runner is not None:
             futures.append( await loop.run_in_executor(executor, bot_runner.run) )
             logger.info(f"Started bot_runner {bot_runner} in {task3}")
+        else:
+            WebSocket.ready_for_websocket_start = True
         ## Too many takes several minutes to download # futures.append( await loop.run_in_executor(executor, self.async_load_all_transactions) )
         await asyncio.gather( *futures )
         logger.info(f"websocket finished")
