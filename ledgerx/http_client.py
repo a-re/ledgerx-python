@@ -153,11 +153,15 @@ class HttpClient:
         delay = DELAY_SECONDS
         headers = gen_headers(include_api_key)
         res = None
+        clean_params = {}
+        for k,v in params.items():
+            if v is not None:
+                clean_params[k] = v
         
         while True:
-            logger.info(f"getting {url} {'Authorization' in headers} {params}")
+            logger.info(f"getting {url} {'Authorization' in headers} {clean_params}")
             #res = await loop.run_in_executor(None, requests.get, url, dict(**params, headers=headers))
-            res = await aiohttp_session.get(url, headers=headers, params=params)
+            res = await aiohttp_session.get(url, headers=headers, params=clean_params)
             logger.debug(f"got from {url} : res={res}")
 
             if res.status == 429 and HttpClient.RETRY_429_ERRORS and not NO_RETRY_429_ERRORS:
