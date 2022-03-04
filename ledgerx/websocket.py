@@ -28,6 +28,7 @@ class WebSocket:
     active = True
     repeat_server = None
     ws_logger = None
+    ready_for_websocket_start = False
 
     @classmethod
     def init_ws_logger(cls):
@@ -48,16 +49,19 @@ class WebSocket:
         try:
             self.clear()
         except:
-            l.exception(f"websocket teardown threw an exception!")
+            print(f"websocket teardown threw an exception!")
+            #l.exception(f"websocket teardown threw an exception!")
         finally:
             print(f"Destroyed Websocket {self}") # logger.info  interferes with logger.warning in self.clear()
-            l.info("Destroyed Websocket {self}")
+            # l.info("Destroyed Websocket {self}")
             
     def clear(self):
         l = self.ws_logger if self.ws_logger is not None else logger
-        l.info(f"Clearing websocket {self}")
+        print(f"Clearing websocket {self}")
+        #l.info(f"Clearing websocket {self}")
         if self.connection is not None:
-            l.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}") # interferes with log in __del__
+            print(f"Attempting to clear websocket {self} with an existing connection {self.connection}")
+            #l.warning(f"Attempting to clear websocket {self} with an existing connection {self.connection}") # interferes with log in __del__
         self.connection = None
         self.update_callbacks = list()
         #self.run_id = None
@@ -68,7 +72,8 @@ class WebSocket:
             try:
                 conn.close()
             except:
-                l.exception(f"Could not close localhost connection: {conn}")
+                print(f"Could not close localhost connection: {conn}")
+                #l.exception(f"Could not close localhost connection: {conn}")
         self.localhost_connections = []
         
 
@@ -329,6 +334,11 @@ class WebSocket:
             cls.repeat_server = None
             run_iteration += 1
             try:
+                
+                while not cls.ready_for_websocket_start:
+                    logger.info(f"Websocket is awaiting readiness")
+                    await asyncio.sleep(1)
+                logger.info(f"Websocket is signalled ready to start")
                     
                 if cls.websocket is not None:
                     logger.warning(f"Detected an existing websocket already! {cls.websocket}")
