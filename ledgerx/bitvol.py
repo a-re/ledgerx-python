@@ -182,6 +182,7 @@ class BitvolCache:
             else:
                 cls.getting_bitvol[key] = now
                 bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
+                logger.info(f"Got bitvol results for {asset} {resolution}: {bitvol_results}")
                 bitvol = cls.store_cached_results(asset, resolution, bitvol_results)
         return None if bitvol is None else bitvol['value']
 
