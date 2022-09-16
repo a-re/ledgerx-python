@@ -1508,6 +1508,7 @@ class MarketState:
     def get_available_collateral(self, underlying_asset):
         """Returns the number of contracts that can be locked for asset"""
         avail = self.get_available(underlying_asset)
+        logger.info(f"Found {avail:.2f} {underlying_asset} available")
         if underlying_asset == "CBTC":
             return int(avail)
         elif underlying_asset == "ETH":

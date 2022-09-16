@@ -3,6 +3,7 @@ import logging.handlers
 import asyncio
 import concurrent.futures
 import websockets
+import websockets.client
 import json
 from time import sleep
 from multiprocessing import AuthenticationError
@@ -110,6 +111,15 @@ class WebSocket:
 
     def update_book_top(self, data):
         logger.debug(f"book_top: {data}")
+
+    def is_beating(self):
+        if self.active and self.heartbeat and 'timestamp' in self.heartbeat:
+            now = dt.datetime.now(tz=dt.timezone.utc)
+            beat_time = dt.datetime.fromtimestamp(self.heartbeat['timestamp'] // 1000000000, tz=dt.timezone.utc)
+            delay = (now - beat_time).total_seconds()
+            if delay < 3:
+                return True
+        return False
 
     def update_heartbeat(self, data):
         logger.debug(f"heartbeat: {data}")
