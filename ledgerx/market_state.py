@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MarketState:
 
     # Constant static variables
-    risk_free = 0.035 # 3.5% risk free interest 11/2022
+    risk_free = 0.040 # 4.0% risk free interest 11/2022
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
@@ -2027,7 +2027,7 @@ class MarketState:
     def is_ready(self):
         if self.is_active and self.action_queue is None:
             return
-        logger.warning(f"MarketState is NOT ready is_active={self.is_active} pending={len(self.action_queue)}")
+        logger.warning(f"MarketState is NOT ready is_active={self.is_active} pending={len(self.action_queue) if self.action_queue is not None else None}")
         return False
     
     async def load_market(self):
@@ -2144,7 +2144,8 @@ class MarketState:
             size = position['size']
             if 'basis' in position:
                 basis = position['basis'] # position[basis] is in usd_units
-                total_net_basis += basis
+                if basis is not None:
+                    total_net_basis += basis
             top = self.get_book_top(contract_id)
             if top is not None:
                 if size > 0:
@@ -2154,7 +2155,7 @@ class MarketState:
                         fee = MarketState.fee(bid,size)
                         sale = (size * bid / multiplier - fee) // MarketState.conv_usd
                         total_net_close += sale
-                        logger.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(sale - basis//MarketState.conv_usd)//1}")
+                        logger.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd if basis is not None else None}, net ${(sale - basis//MarketState.conv_usd)//1 if basis is not None else None}")
                     else:
                         logger.info(f"No bid buyers for {size} of {label}")
                 elif size < 0:
@@ -2164,7 +2165,7 @@ class MarketState:
                         fee = MarketState.fee(ask,size)
                         purchase = (size * ask / multiplier + fee) // MarketState.conv_usd
                         total_net_close += purchase
-                        logger.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(purchase - basis/MarketState.conv_usd)//1}")
+                        logger.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd if basis is not None else None}, net ${(purchase - basis/MarketState.conv_usd)//1 if basis is not None else None}")
                     else:
                         logger.info(f"No ask sellers for {size} of {label}")
         logger.info(f"Net to close ${total_net_close} with basis ${total_net_basis//MarketState.conv_usd} = ${total_net_close - total_net_basis//MarketState.conv_usd} to close all positions at best (top) price.  Did not explore all books for size")
