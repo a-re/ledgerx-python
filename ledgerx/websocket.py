@@ -58,7 +58,7 @@ class WebSocket:
             
     def clear(self):
         l = self.ws_logger if self.ws_logger is not None else logger
-        print(f"Clearing websocket {self}")
+        print(f"Clearing websocket at {dt.datetime.now()} {self}")
         #l.info(f"Clearing websocket {self}")
         if self.connection is not None:
             print(f"Attempting to clear websocket {self} with an existing connection {self.connection}")

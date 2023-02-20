@@ -133,8 +133,17 @@ class BitvolCache:
         if bitvol is not None:
             then = cls.to_time(bitvol['time'])
             if timeout is not None and (now - then).total_seconds() > timeout:
-                logger.info(f"Cache entry for {key} is too old {then} vs {now}")
+                logger.warning(f"Cache entry for {key} is too old {then} vs {now} forcing reload")
                 bitvol = None
+                bitvol_results = Bitvol.list(dict(asset=asset, resolution=resolution))
+                logger.info(f"Got bitvol results for {asset} {resolution}: {bitvol_results}")
+                cls.store_cached_results(asset, resolution, bitvol_results)
+                newbitvol = cls.cache[key]
+                newthen = cls.to_time(newbitvol['time'])
+                if newthen == then:
+                    logger.warning(f"Bitvol is stale, updating to this hour")
+                    newbitvol['time'] = dt.datetime.isoformat(now)
+                    bitvol = newbitvol
         return bitvol
     
     @classmethod
