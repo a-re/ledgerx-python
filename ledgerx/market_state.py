@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MarketState:
 
     # Constant static variables
-    risk_free = 0.040 # 4.0% risk free interest 11/2022
+    risk_free = 0.035 # 3.5% risk free interest 11/2022
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
@@ -28,7 +28,7 @@ class MarketState:
     conv_cbtc = 1000000        # 1M units == 0.01BTC == 1CBTC
     conv_eth  = 1000000000     # 1B units == 1ETH
 
-    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=1) 
+    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=1) # FIXME??
 
     def __init__(self, skip_expired : bool = True):
         self.is_active = False
@@ -1241,7 +1241,7 @@ class MarketState:
         exp = exp.strftime("%d%b%Y").upper()
         
         asset = _asset
-        if asset == "CBTC":
+        if asset == "CBTC" or asset == "BTC":
             asset = "BTC-Mini"
         if derivative_type == 'future_contract':
             return f"{asset}-{exp}-Future"
@@ -1486,7 +1486,7 @@ class MarketState:
         for asset,val in delta_assets.items():
             # convert to units of 1 BTC, 1ETH, 1 Dollar
             delta_assets[asset] = delta_assets[asset] / MarketState.asset_units[asset]
-            if asset == 'CBTC': ## FIXME HACK
+            if asset == 'CBTC' or asset == "BTC": ## FIXME HACK
                 delta_assets[asset] *= 100
         assign_or_expire = ''
         if expiring or assigning:
@@ -1509,7 +1509,7 @@ class MarketState:
         """Returns the number of contracts that can be locked for asset"""
         avail = self.get_available(underlying_asset)
         logger.info(f"Found {avail:.2f} {underlying_asset} available")
-        if underlying_asset == "CBTC":
+        if underlying_asset == "CBTC" or underlying_asset == "BTC":
             return int(avail)
         elif underlying_asset == "ETH":
             return int(avail * 10)
@@ -1934,7 +1934,7 @@ class MarketState:
         if contract_id in self.to_update_basis:
             del self.to_update_basis[contract_id]
 
-        logger.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC basis=${cost:0.0f} net_basis=${net_basis/MarketState.conv_usd:0.0f} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f}-- {self.contract_label(contract_id)}")
+        logger.info(f"Position after {len(trades)} trade(s) {position['size']} (C)BTC basis=${cost:0.0f} net_basis=${net_basis/MarketState.conv_usd:0.0f} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f}-- {self.contract_label(contract_id)}")
         
 
     async def async_update_all_positions(self):
@@ -2327,7 +2327,7 @@ class MarketState:
         futures = []
         futures.append( await loop.run_in_executor(executor, self.load_latest_trades) )
         futures.append( await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port) )
-        futures.append( BitvolCache.async_get_bitvol(asset='CBTC') )
+        futures.append( BitvolCache.async_get_bitvol(asset='BTC') )
         futures.append( BitvolCache.async_get_bitvol(asset='ETH') )
         task3 = None
         if bot_runner is not None:
