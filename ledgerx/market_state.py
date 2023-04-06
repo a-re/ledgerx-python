@@ -26,9 +26,10 @@ class MarketState:
     # divide LX balances to get tradable units
     conv_usd  = 100            # 100 units == $1
     conv_cbtc = 1000000        # 1M units == 0.01BTC == 1CBTC
+    conv_btc = 100000000       # 10M satoishi == 1 BTC
     conv_eth  = 1000000000     # 1B units == 1ETH
 
-    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=1) # FIXME??
+    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=conv_btc) # FIXME after CBTC deprecation???
 
     def __init__(self, skip_expired : bool = True):
         self.is_active = False
@@ -1352,7 +1353,7 @@ class MarketState:
                 self.accounts[balance][asset] = val
 
     def get_available(self, asset, account='available_balances'):
-        """available balance in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)"""
+        """available balance in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         if account not in self.accounts:
             logger.warning(f"No available balances in accounts!!")
             return None
@@ -1365,7 +1366,7 @@ class MarketState:
         return x
 
     def have_available(self, asset, amount):
-        """True if get_available has amount in units of the asset (1BTC, 1 CBTC, 1ETH, 1 Dollar)"""
+        """True if get_available has amount in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         avail = self.get_available(asset)
         if avail is None:
             return False
@@ -1378,7 +1379,7 @@ class MarketState:
     def get_delta_available_assets(self, contract_id:int, is_ask:bool, price:int, size:int, expiring:bool=False, assigning:bool=False):
         """
         What collateral and asset changes upon execution, sales revenue, purchase costs, fees, locked, unlocked collateral
-        returns dict(asset=float) in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)
+        returns dict(asset=float) in units of the asset (1BTC, 1ETH, 1 Dollar)
         if expiring, instead calculate what happens if it expires worthless
         if assigning, instead calculate what happens if it expires exercised
         """
@@ -1425,8 +1426,8 @@ class MarketState:
             assert collateral_asset == underlying_asset, f"Expected future or swap to have same collateral and underlying contract={contract}"
         else:
             assert False, f"Unknown derivative type contract={contract}"
-        assert underlying_asset in ['CBTC', 'ETH'], f"Expected underlying to be CBTC or ETH"
-        assert collateral_asset in ['CBTC', 'ETH', 'USD'], f"Expected underlying to be CBTC or ETH or USD"
+        assert underlying_asset in ['BTC', 'ETH'], f"Expected underlying to be BTC or ETH"
+        assert collateral_asset in ['BTC', 'ETH', 'USD'], f"Expected underlying to be BTC or ETH or USD"
 
         logger.debug(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
 
@@ -1496,8 +1497,6 @@ class MarketState:
         for asset,val in delta_assets.items():
             # convert to units of 1 BTC, 1ETH, 1 Dollar
             delta_assets[asset] = delta_assets[asset] / MarketState.asset_units[asset]
-            if asset == 'CBTC' or asset == "BTC": ## FIXME HACK
-                delta_assets[asset] *= 100
         assign_or_expire = ''
         if expiring or assigning:
             assign_or_expire = 'when ' + 'expiring' if expiring else 'assigning'
