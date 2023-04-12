@@ -35,7 +35,7 @@ class WebSocket:
     def init_ws_logger(cls):
         if cls.ws_logger is None:
             log_logger = logging.getLogger(f'{__name__}.websocket')
-            cls.ws_logger = GZipRotator.getLogger(log_logger, filename='ledgerx-logs/websocket.log', format='%(asctime)s\t%(message)s', level=logging.DEBUG)
+            cls.ws_logger = GZipRotator.getLogger(log_logger, filename='ledgerx-logs/websocket.log', format='%(asctime)s\t%(message)s', level=logging.DEBUG, when='H', interval=3)
         return cls.ws_logger
 
     def __init__(self):
