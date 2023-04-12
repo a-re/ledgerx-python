@@ -28,6 +28,8 @@ class MarketState:
     conv_cbtc = 1000000        # 1M units == 0.01BTC == 1CBTC
     conv_btc = 100000000       # 10M satoishi == 1 BTC
     conv_eth  = 1000000000     # 1B units == 1ETH
+    contracts_per_btc = 100
+    contracts_per_eth = 10
 
     asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=conv_btc) # FIXME after CBTC deprecation???
 
@@ -1518,10 +1520,12 @@ class MarketState:
         """Returns the number of contracts that can be locked for asset"""
         avail = self.get_available(underlying_asset)
         logger.info(f"Found {avail:.2f} {underlying_asset} available")
-        if underlying_asset == "CBTC" or underlying_asset == "BTC":
+        if underlying_asset == "CBTC":
             return int(avail)
+        if underlying_asset == "BTC":
+            return int(avail * MarketState.contracts_per_btc)
         elif underlying_asset == "ETH":
-            return int(avail * 10)
+            return int(avail * MarketState.contracts_per_eth)
         else:
             logger.warning(f"No assets for {underlying_asset}")
             return 0
@@ -2234,7 +2238,7 @@ class MarketState:
         if contract_id not in self.async_reloading_books:
             self.async_reloading_books[contract_id] = self.async_load_books(contract_id)
 
-    async def load_remaining_books(self, max = 100):
+    async def load_remaining_books(self, max = 128):
         # called every heartbeat
         futures = []
         count = 0
