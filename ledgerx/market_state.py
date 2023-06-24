@@ -1306,15 +1306,19 @@ class MarketState:
                 if 'mpid' in contract_position:
                     assert position['mpid'] == contract_position['mpid']
                 if 'id' not in contract_position:
+                    logger.info(f"updating position since 'id' is not in old contract_position[{contract_id}]={contract_position} position={position}")
                     update_all.append(contract_id)
                 elif position['size'] != contract_position['size'] or 'basis' not in contract_position:
+                    logger.info(f"updating basis b/c size mismatch or lack of basis. contract_position[{contract_id}]={contract_position} position={position}")
                     to_update_basis[contract_id] = position
                 for field in ['exercised_size', 'size']:
-                    contract_position[field] = position[field]
-            elif position['size'] != 0 or position['exercised_size'] != 0:
+                    if field in position:
+                        contract_position[field] = position[field]
+            else: # TODO why was this here?  if position['size'] != 0 or position['exercised_size'] != 0:
+                logger.info(f"no entry in contract_positions[{contract_id}]. updating, starting with {position}")
                 self.contract_positions[contract_id] = position
                 update_all.append(contract_id)
-                logger.info(f"No position for {contract_id}")
+                logger.info(f"New position for {contract_id}={position}")
 
         if len(update_all) > 0:
             logger.info(f"Getting new positions for at least these new contracts {update_all}")
@@ -1323,6 +1327,7 @@ class MarketState:
                 if contract_id not in self.contract_positions:
                     needs_all = True
                 else:
+                    logger.info(f"scheduling async_update_position({contract_id})")
                     future = self.async_update_position(contract_id)
                     futures.append(future)
             if needs_all:
@@ -1964,13 +1969,14 @@ class MarketState:
         logger.info(f"Processing {len(all_positions)} positions")
         self.pending_position_updates = False
         for pos in all_positions:
+            logger.info(f"Processing pos {pos}")
             assert 'id' in pos and 'contract' in pos
             contract = pos['contract']
             contract_id = contract['id']
             old_pos = None
             if contract_id in self.contract_positions:
                 old_pos = self.contract_positions[contract_id]
-                if 'basis' in old_pos and old_pos['size'] == pos['size'] and old_pos['assigned_size'] == pos['assigned_size']:
+                if 'basis' in old_pos and old_pos['size'] == pos['size']:
                     pos['basis'] = old_pos['basis']
                     pos['basis_t'] = old_pos['basis_t']
             self.contract_positions[contract_id] = pos
@@ -1984,14 +1990,21 @@ class MarketState:
     async def async_update_position(self, contract_id, position = None):
         logger.info(f"async update position {contract_id} {position}")
         if position is None or 'id' not in position:
-            logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
-            if not self.pending_position_updates:
-                self.pending_position_updates = True
-                await self.async_update_all_positions()
-            else:
-                logger.info(f"all position updates are already pending")
-            position = self.contract_positions[contract_id]
-            logger.info(f"updated position for {contract_id} is now {position}")
+            if position is not None and 'size' in position and position['size'] == 0:
+                # FIXME hack 20230505 to provide 0 basis for zero positions that API will not return an id for:
+                if 'id' not in position and 'basis' not in position:
+                    position['basis'] = 0
+                    position['basis_t'] = 0
+            if position is None:
+                logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
+                if not self.pending_position_updates:
+                    self.pending_position_updates = True
+                    await self.async_update_all_positions()
+                else:
+                    logger.info(f"all position updates are already pending")
+                return
+                position = self.contract_positions[contract_id]
+                logger.info(f"updated position for {contract_id} is now {position}")
         else:
             self.update_position(contract_id, position, False)
             await self.async_update_basis(contract_id, position)
@@ -2247,7 +2260,7 @@ class MarketState:
             if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
                 continue
             contract = self.all_contracts[contract_id]
-            if not self.contract_is_expired(contract) and contract_id not in self.to_update_basis and ('id' not in pos or 'basis' not in pos):
+            if not self.contract_is_expired(contract) and contract_id not in self.to_update_basis and ('basis' not in pos):
                 logger.info(f"Updating position with incomplete state {pos}")
                 self.to_update_basis[contract_id] = pos
         to_update = list(self.to_update_basis.items())
@@ -2256,7 +2269,10 @@ class MarketState:
             if 'id' in pos and 'contract' in pos:
                 futures.append( self.async_update_basis(contract_id, pos) )
             else:
-                futures.append( self.async_update_position(contract_id) )
+                if 'size' in pos and pos['size'] == 0 and 'basis' in pos and pos['basis'] == 0:
+                    pass # FIXME 20230505 api is not longer providing for Positions with 0 size or history
+                else:
+                    futures.append( self.async_update_position(contract_id) )
             if contract_id in self.to_update_basis:
                 del self.to_update_basis[contract_id]
             count = count + 1
