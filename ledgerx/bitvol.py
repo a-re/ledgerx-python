@@ -22,7 +22,11 @@ class Bitvol:
         """
         include_api_key = True
         url = gen_url("/trading/bitvol")
-        res = HttpClient.get(url, params, include_api_key)
+        try:
+            res = HttpClient.get(url, params, include_api_key)
+        except:
+            logger.warning(f"Could not get bitvol for {params}")
+            return None
         return res.json()
 
     @classmethod
@@ -37,7 +41,11 @@ class Bitvol:
         """
         include_api_key = True
         url = gen_url("/trading/bitvol")
-        res = await HttpClient.async_get(url, params, include_api_key)
+        try:
+            res = await HttpClient.async_get(url, params, include_api_key)
+        except:
+            logger.warning(f"Could not get bitvol for {params}")
+            return None
         return await res.json()
 
     ### Helper methods
@@ -162,8 +170,10 @@ class BitvolCache:
     
     @classmethod
     def store_cached_results(cls, asset, resolution, bitvol_results):
-        logger.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={len(bitvol_results['data'])}")
         bitvol = None
+        if bitvol_results is None:
+            return bitvol
+        logger.info(f"bitvol list({asset}, {resolution}) returned keys={bitvol_results.keys()} ['data']={len(bitvol_results['data'])}")
         if asset == "CBTC":
             asset = "BTC"
         elif asset == "CETH":
