@@ -35,7 +35,7 @@ class WebSocket:
     def init_ws_logger(cls):
         if cls.ws_logger is None:
             log_logger = logging.getLogger(f'{__name__}.websocket')
-            cls.ws_logger = GZipRotator.getLogger(log_logger, filename='ledgerx-logs/websocket.log', format='%(asctime)s\t%(message)s', level=logging.DEBUG)
+            cls.ws_logger = GZipRotator.getLogger(log_logger, filename='ledgerx-logs/websocket.log', format='%(asctime)s\t%(message)s', level=logging.DEBUG, when='H', interval=3)
         return cls.ws_logger
 
     def __init__(self):
@@ -58,7 +58,7 @@ class WebSocket:
             
     def clear(self):
         l = self.ws_logger if self.ws_logger is not None else logger
-        print(f"Clearing websocket {self}")
+        print(f"Clearing websocket at {dt.datetime.now()} {self}")
         #l.info(f"Clearing websocket {self}")
         if self.connection is not None:
             print(f"Attempting to clear websocket {self} with an existing connection {self.connection}")

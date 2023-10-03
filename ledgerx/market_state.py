@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MarketState:
 
     # Constant static variables
-    risk_free = 0.005 # 0.5% risk free interest
+    risk_free = 0.055 # 5.5% risk free interest 6/2023
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
@@ -26,9 +26,12 @@ class MarketState:
     # divide LX balances to get tradable units
     conv_usd  = 100            # 100 units == $1
     conv_cbtc = 1000000        # 1M units == 0.01BTC == 1CBTC
+    conv_btc = 100000000       # 10M satoishi == 1 BTC
     conv_eth  = 1000000000     # 1B units == 1ETH
+    contracts_per_btc = 100
+    contracts_per_eth = 10
 
-    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=1) 
+    asset_units = dict(USD=conv_usd, CBTC=conv_cbtc, ETH=conv_eth, BTC=conv_btc) # FIXME after CBTC deprecation???
 
     def __init__(self, skip_expired : bool = True):
         self.is_active = False
@@ -283,7 +286,7 @@ class MarketState:
 
     @staticmethod
     def get_expire_t(contract:dict, now:dt.datetime=None):
-        assert('date_expires' in contract)
+        assert 'date_expires' in contract
         if now is None:
             now = dt.datetime.now(MarketState.timezone)
         exp_str = contract['date_expires']
@@ -420,21 +423,21 @@ class MarketState:
 
 
     def add_expiration_date(self, date):
-        assert(date not in self.exp_dates)
+        assert date not in self.exp_dates
         self.exp_dates.append(date)
         self.exp_dates.sort()
 
     def is_my_order(self, order):
         if self.mpid is None and 'mpid' in order and order['mpid'] is not None:
-            assert(self.cid is None)
-            assert(order['cid'] is not None)
+            assert self.cid is None 
+            assert order['cid'] is not None
             # bootstrap mpid and cid from the first order of mine
             if self.mpid is None:
                 self.mpid = order['mpid']
             if self.cid is None:
                 self.cid = order['cid']
-            assert(self.mpid == order['mpid'])
-            assert(self.cid == order['cid'])
+            assert self.mpid == order['mpid']
+            assert self.cid == order['cid']
         is_it = self.mpid is not None and 'mpid' in order and self.mpid == order['mpid']
         mid = order['mid']
         if not is_it:
@@ -470,7 +473,7 @@ class MarketState:
                 logger.info(f"Already captured book state for order book_order={book_order} order={order}")
             else:
                 logger.warning(f"Different sizes from existing book_order={book_order} order={order}")
-        assert('status_type' in order and (order['status_type'] == 200 or order['status_type'] == 201 or order['status_type'] == 204))
+        assert 'status_type' in order and (order['status_type'] == 200 or order['status_type'] == 201 or order['status_type'] == 204)
         label = self.all_contracts[contract_id]['label']
         book_order = dict(contract_id=contract_id, price=order['price'], size=order['size'], is_ask=order['is_ask'], clock=order['clock'], mid=mid)
         is_my_order = self.is_my_order(order)
@@ -479,7 +482,7 @@ class MarketState:
         if is_my_order and mid not in self.my_orders:
             self.my_orders.add(mid)
         if order['status_type'] == 200 or order['status_type'] == 204:
-            assert(book_order['size'] == order['inserted_size'] and book_order['price'] == order['inserted_price'])
+            assert book_order['size'] == order['inserted_size'] and book_order['price'] == order['inserted_price']
         elif order['status_type'] == 201:
             if order['inserted_size'] != 0:
                 book_order['price'] = order['inserted_price']
@@ -497,7 +500,7 @@ class MarketState:
 
     def remove_order(self, order):
         logger.debug(f"removing order {order}")
-        assert('mid' in order and 'contract_id' in order)
+        assert 'mid' in order and 'contract_id' in order
         mid = order['mid']
         contract_id = order['contract_id']
         book_state = self.get_book_state(contract_id)
@@ -520,15 +523,15 @@ class MarketState:
         book_state = self.get_book_state(contract_id)
         exists = mid in book_state
         inserted = False
-        assert('status_type' in order and (order['status_type'] == 201 or order['status_type'] == 204))
+        assert 'status_type' in order and (order['status_type'] == 201 or order['status_type'] == 204)
         if not exists:
             logger.debug(f"traded order has not been tracked yet! {order}") 
             self.insert_new_order(order)
             inserted = False
-        assert(mid in book_state)
+        assert mid in book_state
         # make a copy of the book order
         book_order = dict(**book_state[mid])
-        assert(order['contract_id'] in self.all_contracts)
+        assert order['contract_id'] in self.all_contracts
         contract = self.all_contracts[contract_id]
         label = contract['label']
         if book_order['clock'] <= order['clock']:
@@ -551,7 +554,7 @@ class MarketState:
                 new_size = book_new_size
                         
             logger.debug(f"Adjusted size (keeping book price) from {order['size']} @ ${order['price']//100} to {new_size} @ ${book_order['price']//100} because book_order {book_order} vs trade {order}")
-            assert(new_size <= book_order['size'])
+            assert new_size <= book_order['size']
             book_order['size'] = new_size
             book_order['clock'] = order['clock']
 
@@ -609,7 +612,7 @@ class MarketState:
         # Check for any stashed out-of-order orders
         if is_my_order and contract_id in self.my_out_of_order_orders and not ignore_out_of_order:
             oooo = self.my_out_of_order_orders[contract_id]
-            assert(len(oooo) > 0)
+            assert len(oooo) > 0
             first = oooo[0]
             last = oooo[-1]
             stashed_is_okay = True
@@ -622,7 +625,7 @@ class MarketState:
                 else:
                     logger.info(f"Still catching up to first out-of-order order on contract_id={contract_id}: order_clock={order_clock} {first}")
             elif first['clock'] == order_clock:
-                assert('mpid' in first)
+                assert 'mpid' in first
                 if 'mpid' in order:
                     logger.warning(f"Got DUPLICATE my order with mpid?? first={first} order={order}")
                 if first['status_type'] != status or first['mid'] != mid:
@@ -791,7 +794,7 @@ class MarketState:
                 continue
             if exclude_self and mid in self.my_orders:
                 continue
-            assert(mid == book['mid'])
+            assert mid == book['mid']
             is_ask = book['is_ask']
             price = book['price']
             if is_ask:
@@ -828,7 +831,7 @@ class MarketState:
                 continue
             if exclude_self and mid in self.my_orders:
                 continue
-            assert(mid == book['mid'])
+            assert mid == book['mid']
             is_ask = book['is_ask']
             price = book['price']
             if is_ask:
@@ -892,12 +895,12 @@ class MarketState:
     def handle_book_state(self, contract_id, book_state):
         """{clock": 57906, "entry_id": "81d87376167f400fb6545234600856b2", "is_ask": true, "price": 884000, "size": 1}"""
         logger.debug(f"handle_book_state {contract_id} {book_state}")
-        assert('mid' in book_state)
+        assert 'mid' in book_state
         if contract_id not in self.book_states:
             self.book_states[contract_id] = dict()
         books = self.book_states[contract_id]
         mid = book_state['mid']
-        assert(mid != 'last_delete_clock')
+        assert mid != 'last_delete_clock'
         if mid in books:
             book_order = books[mid]
             if book_state['clock'] < book_order['clock']:
@@ -910,8 +913,8 @@ class MarketState:
             books[mid] = book_state
 
     def handle_all_book_states(self, book_states):
-        assert('contract_id' in book_states)
-        assert('book_states' in book_states)
+        assert 'contract_id' in book_states
+        assert 'book_states' in book_states
         contract_id = book_states['contract_id']
         if contract_id not in self.all_contracts:
             self.retrieve_contract(contract_id)
@@ -1167,7 +1170,7 @@ class MarketState:
     def add_contract(self, contract):
         if contract['date_expires'] not in self.exp_dates:
             self.add_expiration_date(contract['date_expires'])
-        assert(contract['date_expires'] in self.exp_dates)
+        assert contract['date_expires'] in self.exp_dates
         contract_id = contract['id']
         if contract_id in self.all_contracts:
             return
@@ -1220,7 +1223,7 @@ class MarketState:
 
     def add_exp_strike(self, contract):
         exp = contract['date_expires']
-        assert(exp in self.exp_dates)
+        assert exp in self.exp_dates
         if exp not in self.exp_strikes:
             self.exp_strikes[exp] = dict()
         exp_asset_strikes = self.exp_strikes[exp]
@@ -1241,7 +1244,7 @@ class MarketState:
         exp = exp.strftime("%d%b%Y").upper()
         
         asset = _asset
-        if asset == "CBTC":
+        if asset == "CBTC" or asset == "BTC":
             asset = "BTC-Mini"
         if derivative_type == 'future_contract':
             return f"{asset}-{exp}-Future"
@@ -1258,15 +1261,15 @@ class MarketState:
 
     def contract_added_action(self, action):
         logger.info(f"contract added {action}")
-        assert(action['type'] == 'contract_added')
+        assert action['type'] == 'contract_added'
         contract_id = action['data']['id']
         self.retrieve_contract(contract_id, True)
         contract = self.all_contracts[contract_id]
-        assert(contract['derivative_type'] == action['data']['derivative_type'])
+        assert contract['derivative_type'] == action['data']['derivative_type']
 
     def remove_contract(self, contract):
         # just flag it as expired
-        assert(contract['date_expires'] in self.exp_dates)
+        assert contract['date_expires'] in self.exp_dates
         contract_id = contract['id']
         if contract_id in self.expired_contracts:
             return
@@ -1275,7 +1278,7 @@ class MarketState:
 
     def contract_removed_action(self, action):
         logger.info(f"contract removed {action}")
-        assert(action['type'] == 'contract_removed')
+        assert action['type'] == 'contract_removed'
         self.remove_contract(action['data'])
             
     def trade_busted_action(self, action):
@@ -1284,8 +1287,8 @@ class MarketState:
 
     async def open_positions_action(self, action):
         logger.info(f"Positions {action}")
-        assert(action['type'] == 'open_positions_update')
-        assert('positions' in action)
+        assert action['type'] == 'open_positions_update'
+        assert 'positions' in action
         to_update_basis = dict()
         update_all = []
         futures = []
@@ -1301,17 +1304,21 @@ class MarketState:
             if contract_id in self.contract_positions:
                 contract_position = self.contract_positions[contract_id]
                 if 'mpid' in contract_position:
-                    assert(position['mpid'] == contract_position['mpid'])
+                    assert position['mpid'] == contract_position['mpid']
                 if 'id' not in contract_position:
+                    logger.info(f"updating position since 'id' is not in old contract_position[{contract_id}]={contract_position} position={position}")
                     update_all.append(contract_id)
                 elif position['size'] != contract_position['size'] or 'basis' not in contract_position:
+                    logger.info(f"updating basis b/c size mismatch or lack of basis. contract_position[{contract_id}]={contract_position} position={position}")
                     to_update_basis[contract_id] = position
                 for field in ['exercised_size', 'size']:
-                    contract_position[field] = position[field]
-            elif position['size'] != 0 or position['exercised_size'] != 0:
+                    if field in position:
+                        contract_position[field] = position[field]
+            else: # TODO why was this here?  if position['size'] != 0 or position['exercised_size'] != 0:
+                logger.info(f"no entry in contract_positions[{contract_id}]. updating, starting with {position}")
                 self.contract_positions[contract_id] = position
                 update_all.append(contract_id)
-                logger.info(f"No position for {contract_id}")
+                logger.info(f"New position for {contract_id}={position}")
 
         if len(update_all) > 0:
             logger.info(f"Getting new positions for at least these new contracts {update_all}")
@@ -1320,6 +1327,7 @@ class MarketState:
                 if contract_id not in self.contract_positions:
                     needs_all = True
                 else:
+                    logger.info(f"scheduling async_update_position({contract_id})")
                     future = self.async_update_position(contract_id)
                     futures.append(future)
             if needs_all:
@@ -1341,10 +1349,10 @@ class MarketState:
 
     def collateral_balance_action(self, action):
         logger.info(f"Collateral {action}")
-        assert(action['type'] == 'collateral_balance_update')
-        assert('collateral' in action)
-        assert('available_balances' in action['collateral'])
-        assert('position_locked_balances' in action['collateral'])
+        assert action['type'] == 'collateral_balance_update'
+        assert 'collateral' in action
+        assert 'available_balances' in action['collateral']
+        assert 'position_locked_balances' in action['collateral']
         for balance, asset_balance in action['collateral'].items():
             for asset, val in asset_balance.items():
                 if balance not in self.accounts:
@@ -1352,7 +1360,7 @@ class MarketState:
                 self.accounts[balance][asset] = val
 
     def get_available(self, asset, account='available_balances'):
-        """available balance in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)"""
+        """available balance in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         if account not in self.accounts:
             logger.warning(f"No available balances in accounts!!")
             return None
@@ -1365,7 +1373,7 @@ class MarketState:
         return x
 
     def have_available(self, asset, amount):
-        """True if get_available has amount in units of the asset (1BTC, 1 CBTC, 1ETH, 1 Dollar)"""
+        """True if get_available has amount in units of the asset (1BTC, 1ETH, 1 Dollar)"""
         avail = self.get_available(asset)
         if avail is None:
             return False
@@ -1378,15 +1386,15 @@ class MarketState:
     def get_delta_available_assets(self, contract_id:int, is_ask:bool, price:int, size:int, expiring:bool=False, assigning:bool=False):
         """
         What collateral and asset changes upon execution, sales revenue, purchase costs, fees, locked, unlocked collateral
-        returns dict(asset=float) in units of the asset (1BTC, 1CBTC, 1ETH, 1 Dollar)
+        returns dict(asset=float) in units of the asset (1BTC, 1ETH, 1 Dollar)
         if expiring, instead calculate what happens if it expires worthless
         if assigning, instead calculate what happens if it expires exercised
         """
         logger.debug(f"getting delta available assets: {contract_id}, {is_ask}, {price}, {size}, {expiring}, {assigning}")
         if assigning:
-            assert(not expiring)
+            assert not expiring
         else:
-            assert(not assigning)
+            assert not assigning
                 
         # init to 0
         delta_assets = dict(USD=0)
@@ -1394,14 +1402,15 @@ class MarketState:
             logger.info(f"No price {price} or size {size} for {contract_id}, so no delta will be provided.")
             return delta_assets
         
-        assert(size > 0)
-        assert(price > 0)
+        assert size > 0
+        assert price > 0
         contract = self.get_contract(contract_id)
         
-        assert(contract is not None)
+        assert contract is not None
         multiplier = contract['multiplier']
         derivative_type = contract['derivative_type']
         collateral_asset = contract['collateral_asset']
+        underlying_asset = contract['underlying_asset']
         delta_assets[collateral_asset] = 0
         
         # account for premium and fees
@@ -1414,7 +1423,19 @@ class MarketState:
         position = self.get_my_position(contract_id)
         if position is None:
             position = 0
-        
+        if derivative_type == 'options_contract':
+            if contract['type'] == 'put':
+                assert collateral_asset == "USD", f"expected USD for put contract={contract}"
+            else:
+                assert contract['type'] == 'call', f"expected call for non-put options_contract contract={contract}"
+                assert collateral_asset == underlying_asset, f"Expected call to have same collateral and underlying contract={contract}"
+        elif derivative_type in ['day_ahead_swap', 'future_contract']:
+            assert collateral_asset == underlying_asset, f"Expected future or swap to have same collateral and underlying contract={contract}"
+        else:
+            assert False, f"Unknown derivative type contract={contract}"
+        assert underlying_asset in ['BTC', 'ETH'], f"Expected underlying to be BTC or ETH"
+        assert collateral_asset in ['BTC', 'ETH', 'USD'], f"Expected underlying to be BTC or ETH or USD"
+
         logger.debug(f"Getting delta assets on {contract['label']} position={position} is_ask={is_ask} price={price} size={size}")
 
         if is_ask:
@@ -1426,7 +1447,7 @@ class MarketState:
                         if contract['type'] == 'put':
                             delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
                         else:
-                            assert(contract['type'] == 'call')
+                            assert contract['type'] == 'call', f"Expecting call contract={contract}"
                             delta_assets["USD"] += size * contract['strike_price'] / multiplier
                     else:
                         pass # futures and swaps have no receivable when short
@@ -1436,7 +1457,6 @@ class MarketState:
                         if contract['type'] == 'put':
                             delta_assets["USD"] += size * contract['strike_price'] / multiplier 
                         else:
-                            assert(contract['type'] == 'call')
                             delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
                     else:
                         pass # futures and swaps have no receivable when short (also expired futures do not exist (always assigned))
@@ -1446,10 +1466,9 @@ class MarketState:
                     if position > 0:
                         # start with a positive position that does not release collateral
                         delta_short_size = size - position
-                    assert(delta_short_size > 0)
+                    assert delta_short_size > 0
                     # locking assets
                     if derivative_type == 'options_contract' and contract['type'] == 'put':
-                        assert(collateral_asset == "USD")
                         delta_assets["USD"] -= delta_short_size * contract['strike_price'] / multiplier
                     else:
                         delta_assets[collateral_asset] -= delta_short_size * MarketState.asset_units[collateral_asset] / multiplier
@@ -1460,12 +1479,12 @@ class MarketState:
                 if derivative_type in ['day_ahead_swap', 'future_contract']:
                     delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
                 else:
-                    assert(derivative_type == 'options_contract')
+                    assert derivative_type == 'options_contract', f"Expecting options_contract contract={contract}"
                     if contract['type'] == 'put':
                         delta_assets[collateral_asset] -= size * MarketState.asset_units[collateral_asset] / multiplier
                         delta_assets["USD"] += size * contract['strike_price'] / multiplier
                     else:
-                        assert(contract['type'] == 'call')
+                        assert contract['type'] == 'call', f"Expecting call contract={contract}"
                         delta_assets[collateral_asset] += size * MarketState.asset_units[collateral_asset] / multiplier
                         delta_assets["USD"] -= size * contract['strike_price'] / multiplier
             elif expiring:
@@ -1476,18 +1495,15 @@ class MarketState:
                 if position + size >= 0:
                     # resulting in a long position which will not further unlock
                     delta_short_size = - position
-                assert(delta_short_size > 0)
+                assert delta_short_size > 0
                 # unlocking assets
                 if derivative_type == 'options_contract' and contract['type'] == 'put':
-                    assert(collateral_asset == "USD")
                     delta_assets["USD"] += delta_short_size * contract['strike_price'] / multiplier
                 else:
                     delta_assets[collateral_asset] = delta_short_size * MarketState.asset_units[collateral_asset] / multiplier
         for asset,val in delta_assets.items():
             # convert to units of 1 BTC, 1ETH, 1 Dollar
             delta_assets[asset] = delta_assets[asset] / MarketState.asset_units[asset]
-            if asset == 'CBTC': ## FIXME HACK
-                delta_assets[asset] *= 100
         assign_or_expire = ''
         if expiring or assigning:
             assign_or_expire = 'when ' + 'expiring' if expiring else 'assigning'
@@ -1511,14 +1527,16 @@ class MarketState:
         logger.info(f"Found {avail:.2f} {underlying_asset} available")
         if underlying_asset == "CBTC":
             return int(avail)
+        if underlying_asset == "BTC":
+            return int(avail * MarketState.contracts_per_btc)
         elif underlying_asset == "ETH":
-            return int(avail * 10)
+            return int(avail * MarketState.contracts_per_eth)
         else:
             logger.warning(f"No assets for {underlying_asset}")
             return 0
 
     async def book_top_action(self, action) -> bool:
-        assert(action['type'] == 'book_top')
+        assert action['type'] == 'book_top'
         contract_id = action['contract_id']
         logger.debug(f"book_top contract={contract_id} clock={action['clock']} {action}")
         if contract_id == 0:
@@ -1535,7 +1553,7 @@ class MarketState:
                 logger.info(f"no books yet for booktop {contract_id} {action}")
                 self.book_top[contract_id] = action
             top = self.book_top[contract_id]
-            assert(contract_id == top['contract_id'])
+            assert contract_id == top['contract_id']
             if top['clock'] < action['clock']:
                 logger.debug(f"BookTop update {contract_id} {self.all_contracts[contract_id]['label']} {action}")
                 self.book_top[contract_id] = action
@@ -1558,7 +1576,7 @@ class MarketState:
         delay = (now - beat_time).total_seconds()
         logger.info(f"Heartbeat delay={delay} {action} {self.handle_counts}")
         self.handle_counts = dict()
-        assert(action['type'] == 'heartbeat')
+        assert action['type'] == 'heartbeat'
         if self.last_heartbeat is None:
             pass
         else:
@@ -1636,7 +1654,7 @@ class MarketState:
     # returns True for a unique report, False for a duplicate
     async def action_report_action(self, action, ignore_out_of_order:bool = False) -> bool:
         logger.debug(f"ActionReport {action}")
-        assert(action['type'] == 'action_report')
+        assert action['type'] == 'action_report'
         return await self.handle_order(action, ignore_out_of_order)
 
     def start_action_queue(self):
@@ -1657,7 +1675,7 @@ class MarketState:
                 action = self.action_queue.pop(0)
                 await self.handle_action(action, True)
                 count += 1
-            assert(self.action_queue is None or len(self.action_queue) == 0)
+            assert self.action_queue is None or len(self.action_queue) == 0
             self.action_queue = None
         logger.info(f"Done processing {count} queued actions")
             
@@ -1717,7 +1735,7 @@ class MarketState:
 
     def retrieve_contract(self, contract_id, force = False):
         contract = ledgerx.Contracts.retrieve(contract_id)["data"]
-        assert(contract["id"] == contract_id)
+        assert contract["id"] == contract_id
         if force or contract_id not in self.all_contracts:
             logger.info(f"retrieve_contract: new contract {contract}")
             self.add_contract(contract)
@@ -1726,7 +1744,7 @@ class MarketState:
     async def async_retrieve_contract(self, contract_id, force = False):
         contract_res = await ledgerx.Contracts.async_retrieve(contract_id)
         contract = contract_res["data"]
-        assert(contract["id"] == contract_id)
+        assert contract["id"] == contract_id
         if force or contract_id not in self.all_contracts:
             logger.info(f"retrieve_contract: new contract {contract}")
             self.add_contract(contract)
@@ -1792,14 +1810,14 @@ class MarketState:
                 logger.warning(f"unknown balance type {deb_field}")
                 acct[deb_field] = 0
             acct[deb_field] -= transaction['amount']
-            assert(-transaction['amount'] == transaction['debit_post_balance'] - transaction['debit_pre_balance'])
+            assert -transaction['amount'] == transaction['debit_post_balance'] - transaction['debit_pre_balance']
         if transaction['credit_post_balance'] is not None:
             cred_field = transaction['credit_account_field_name']
             if cred_field not in acct:
                 logger.warning(f"unknown balance type {deb_field}")
                 acct[cred_field] = 0
             acct[cred_field] += transaction['amount']
-            assert(transaction['amount'] == transaction['credit_post_balance'] - transaction['credit_pre_balance'])
+            assert transaction['amount'] == transaction['credit_post_balance'] - transaction['credit_pre_balance']
 
     
 
@@ -1842,10 +1860,14 @@ class MarketState:
         self.process_basis_trades(contract, position, trades)
 
     def process_basis_trades(self, contract, position, trades):
+        """
+        Sets basis (one-sided), net_basis (overall) and basis_t (one-sided weighted)
+        """
         contract_id = contract['id']
         logger.debug(f"got {len(trades)} trades for {self.contract_label(contract_id)}")
         pos = 0
         basis = 0
+        basis_contract_t = 0
         net_basis = 0
         basis_price = 0
         net_basis_price = 0
@@ -1853,52 +1875,61 @@ class MarketState:
         # fully closing the position resets all basis tracking
         # basis / pos should be avg_basis for the side, not overall basis including partial closings
         trades.reverse() # use chronological order
+        now = dt.datetime.now(self.timezone)
         for trade in trades:
             logger.info(f"contract {contract_id} trade {trade}")
-            assert(contract_id == int(trade["contract_id"]))
+            assert contract_id == int(trade["contract_id"])
             num = int(trade["filled_size"])
+            trade_date = dt.datetime.fromtimestamp(int(trade['timestamp']) // 1000000000, tz=self.timezone)
+            trade_t = (now - trade_date).total_seconds() / MarketState.seconds_per_year
             delta = int(trade["fee"]) - int(trade["rebate"]) # paid the fee received the rebate
             prev_pos = pos
             if trade["side"] == "bid":
                 # bought so positive delta
                 delta += int(trade["premium"]) # paid the premium
-                assert(delta > 0)
+                assert delta > 0
                 net_basis += delta
                 if pos >= 0:
                     # is closed or long
-                    assert(basis >= 0)
+                    assert basis >= 0
                     basis += delta # stack onto the existing basis
+                    basis_contract_t += num * trade_t
                 else:
                     # is short, so closing
-                    assert(basis < 0)
+                    assert basis < 0
                     basis -= abs(num/pos) * basis # subtract some by the avg basis which is negative
+                    basis_contract_t -= num * trade_t
                 pos += num
             else:
-                assert(trade["side"] == "ask")
+                assert trade["side"] == "ask"
                 # sold, so negative basis and negative position delta
                 delta -= int(trade["premium"]) # received the premium
-                assert(delta < 0)
+                assert delta < 0
                 net_basis += delta
                 if pos <= 0:
                     # is closed or short
-                    assert(basis <= 0)
+                    assert basis <= 0
                     basis += delta # stack onto the existing (negative) basis with (negative) delta
+                    basis_contract_t += num * trade_t
                 else:
                     # is long, so closing
-                    assert(basis > 0)
+                    assert basis > 0
                     basis -= abs(num/pos) * basis # subtract some of the avg basis which is positive
+                    basis_contract_t -= num * trade_t
                 pos -= num
             if pos == 0 or (prev_pos < 0 and pos > 0) or (prev_pos > 0 and pos < 0):
-                logger.info(f"Zeroed position, so reset basis from basis={basis} net_basis={net_basis}")
+                logger.info(f"Zeroed position, so reset basis from basis={basis} net_basis={net_basis} basis_contract_t={basis_contract_t}")
                 if pos == 0:
                     basis = 0
+                    basis_contract_t = 0
                 else:
                     basis = abs(pos / num) * delta # set a new avg basis
+                    basis_contract_t = abs(pos) * trade_t
             basis_price = 0 if pos == 0 else contract['multiplier'] * basis / pos / MarketState.conv_usd
             net_basis_price = 0 if pos == 0 else contract['multiplier'] * net_basis / pos / MarketState.conv_usd
             logger.debug(f"new basis: {contract_id} pos={pos} basis={basis} net_basis={net_basis} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f} num={num} delta={delta}")
                 
-        logger.debug(f"final pos {pos} basis {basis} position {position}")
+        logger.debug(f"final pos {pos} basis {basis} position {position} basis_contract_t={basis_contract_t}")
 
         if pos != position['size']:
             logger.warning(f"update to position did not yield pos={pos} {position}, updating them all in 10 heartbeats")
@@ -1914,13 +1945,14 @@ class MarketState:
             position["type"] = "long"
 
         position['basis'] = basis # basis is in usd_units
+        position['basis_t'] = 0 if pos == 0 else basis_contract_t / abs(pos) # approx weighted years for side
         position['net_basis'] = net_basis # net over all trades in the contract
         cost = basis / MarketState.conv_usd
         self.contract_positions[contract_id] = position
         if contract_id in self.to_update_basis:
             del self.to_update_basis[contract_id]
 
-        logger.info(f"Position after {len(trades)} trade(s) {position['size']} CBTC basis=${cost:0.0f} net_basis=${net_basis/MarketState.conv_usd:0.0f} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f}-- {self.contract_label(contract_id)}")
+        logger.info(f"Position after {len(trades)} trade(s) {position['size']} (C)BTC basis=${cost:0.0f} net_basis=${net_basis/MarketState.conv_usd:0.0f} basis_price=${basis_price:0.2f} net_basis_price=${net_basis_price:0.2f}-- {self.contract_label(contract_id)}")
         
 
     async def async_update_all_positions(self):
@@ -1937,14 +1969,16 @@ class MarketState:
         logger.info(f"Processing {len(all_positions)} positions")
         self.pending_position_updates = False
         for pos in all_positions:
-            assert('id' in pos and 'contract' in pos)
+            logger.info(f"Processing pos {pos}")
+            assert 'id' in pos and 'contract' in pos
             contract = pos['contract']
             contract_id = contract['id']
             old_pos = None
             if contract_id in self.contract_positions:
                 old_pos = self.contract_positions[contract_id]
-                if 'basis' in old_pos and old_pos['size'] == pos['size'] and old_pos['assigned_size'] == pos['assigned_size']:
+                if 'basis' in old_pos and old_pos['size'] == pos['size']:
                     pos['basis'] = old_pos['basis']
+                    pos['basis_t'] = old_pos['basis_t']
             self.contract_positions[contract_id] = pos
             if 'basis' not in pos:
                 if self.skip_expired:
@@ -1956,14 +1990,21 @@ class MarketState:
     async def async_update_position(self, contract_id, position = None):
         logger.info(f"async update position {contract_id} {position}")
         if position is None or 'id' not in position:
-            logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
-            if not self.pending_position_updates:
-                self.pending_position_updates = True
-                await self.async_update_all_positions()
-            else:
-                logger.info(f"all position updates are already pending")
-            position = self.contract_positions[contract_id]
-            logger.info(f"updated position for {contract_id} is now {position}")
+            if position is not None and 'size' in position and position['size'] == 0:
+                # FIXME hack 20230505 to provide 0 basis for zero positions that API will not return an id for:
+                if 'id' not in position and 'basis' not in position:
+                    position['basis'] = 0
+                    position['basis_t'] = 0
+            if position is None:
+                logger.warning(f"Need all postitions to be updated because {contract_id} has no position or position id")
+                if not self.pending_position_updates:
+                    self.pending_position_updates = True
+                    await self.async_update_all_positions()
+                else:
+                    logger.info(f"all position updates are already pending")
+                return
+                position = self.contract_positions[contract_id]
+                logger.info(f"updated position for {contract_id} is now {position}")
         else:
             self.update_position(contract_id, position, False)
             await self.async_update_basis(contract_id, position)
@@ -2001,10 +2042,10 @@ class MarketState:
         self.my_orders.clear()
         num = 0
         for order in new_open_orders:
-            assert('mpid' in order)
-            assert(self.is_my_order(order))
+            assert 'mpid' in order
+            assert self.is_my_order(order)
             logger.info(f"open order {order}")
-            assert('mpid' in order)
+            assert 'mpid' in order
             self.my_orders.add(order['mid'])
             num += 1
         logger.info(f"Found {num} of MY open orders")
@@ -2012,7 +2053,7 @@ class MarketState:
     def is_ready(self):
         if self.is_active and self.action_queue is None:
             return
-        logger.warning(f"MarketState is NOT ready is_active={self.is_active} pending={len(self.action_queue)}")
+        logger.warning(f"MarketState is NOT ready is_active={self.is_active} pending={len(self.action_queue) if self.action_queue is not None else None}")
         return False
     
     async def load_market(self):
@@ -2129,7 +2170,8 @@ class MarketState:
             size = position['size']
             if 'basis' in position:
                 basis = position['basis'] # position[basis] is in usd_units
-                total_net_basis += basis
+                if basis is not None:
+                    total_net_basis += basis
             top = self.get_book_top(contract_id)
             if top is not None:
                 if size > 0:
@@ -2139,7 +2181,7 @@ class MarketState:
                         fee = MarketState.fee(bid,size)
                         sale = (size * bid / multiplier - fee) // MarketState.conv_usd
                         total_net_close += sale
-                        logger.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(sale - basis//MarketState.conv_usd)//1}")
+                        logger.info(f"Sell for ${sale}, {size} of {label} at top bid ${bid//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd if basis is not None else None}, net ${(sale - basis//MarketState.conv_usd)//1 if basis is not None else None}")
                     else:
                         logger.info(f"No bid buyers for {size} of {label}")
                 elif size < 0:
@@ -2149,7 +2191,7 @@ class MarketState:
                         fee = MarketState.fee(ask,size)
                         purchase = (size * ask / multiplier + fee) // MarketState.conv_usd
                         total_net_close += purchase
-                        logger.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd}, net ${(purchase - basis/MarketState.conv_usd)//1}")
+                        logger.info(f"Buy for ${-purchase}, {-size} of {label} at top ask ${ask//MarketState.conv_usd} with basis ${basis//MarketState.conv_usd if basis is not None else None}, net ${(purchase - basis/MarketState.conv_usd)//1 if basis is not None else None}")
                     else:
                         logger.info(f"No ask sellers for {size} of {label}")
         logger.info(f"Net to close ${total_net_close} with basis ${total_net_basis//MarketState.conv_usd} = ${total_net_close - total_net_basis//MarketState.conv_usd} to close all positions at best (top) price.  Did not explore all books for size")
@@ -2209,7 +2251,7 @@ class MarketState:
         if contract_id not in self.async_reloading_books:
             self.async_reloading_books[contract_id] = self.async_load_books(contract_id)
 
-    async def load_remaining_books(self, max = 100):
+    async def load_remaining_books(self, max = 128):
         # called every heartbeat
         futures = []
         count = 0
@@ -2218,7 +2260,7 @@ class MarketState:
             if contract_id in self.expired_contracts or contract_id not in self.all_contracts:
                 continue
             contract = self.all_contracts[contract_id]
-            if not self.contract_is_expired(contract) and contract_id not in self.to_update_basis and ('id' not in pos or 'basis' not in pos):
+            if not self.contract_is_expired(contract) and contract_id not in self.to_update_basis and ('basis' not in pos):
                 logger.info(f"Updating position with incomplete state {pos}")
                 self.to_update_basis[contract_id] = pos
         to_update = list(self.to_update_basis.items())
@@ -2227,7 +2269,10 @@ class MarketState:
             if 'id' in pos and 'contract' in pos:
                 futures.append( self.async_update_basis(contract_id, pos) )
             else:
-                futures.append( self.async_update_position(contract_id) )
+                if 'size' in pos and pos['size'] == 0 and 'basis' in pos and pos['basis'] == 0:
+                    pass # FIXME 20230505 api is not longer providing for Positions with 0 size or history
+                else:
+                    futures.append( self.async_update_position(contract_id) )
             if contract_id in self.to_update_basis:
                 del self.to_update_basis[contract_id]
             count = count + 1
@@ -2311,7 +2356,7 @@ class MarketState:
         futures = []
         futures.append( await loop.run_in_executor(executor, self.load_latest_trades) )
         futures.append( await loop.run_in_executor(executor, self._run_websocket_server, self.handle_action, include_api_key, repeat_server_port) )
-        futures.append( BitvolCache.async_get_bitvol(asset='CBTC') )
+        futures.append( BitvolCache.async_get_bitvol(asset='BTC') )
         futures.append( BitvolCache.async_get_bitvol(asset='ETH') )
         task3 = None
         if bot_runner is not None:
