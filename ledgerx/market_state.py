@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MarketState:
 
     # Constant static variables
-    risk_free = 0.055 # 5.5% risk free interest 6/2023
+    risk_free = 0.06 # 6% risk free interest 10/2023
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
@@ -1150,20 +1150,27 @@ class MarketState:
                 del self.next_day_contracts[asset]
         if next_day_contract is None:
             # get the newest one
-            logger.info("Discovering the latest NextDay swap contract") # FIXME to detect next day when it becomes active
+            # FIXME to detect next day at the time it becomes active
             contracts = self.all_contracts.values()
-            if self.last_contracts_scan is None or (dt.datetime.now() - self.last_contracts_scan).total_seconds() > 90:
+            n = dt.datetime.now()
+            if self.last_contracts_scan is None or (n - self.last_contracts_scan).total_seconds() > 90:
+                logger.info("Discovering the latest NextDay swap contract") 
                 contracts = ledgerx.Contracts.list_all(dict(derivative_type='day_ahead_swap',active=True))
                 logger.info(f"Got {contracts}")
-                self.last_contracts_scan = dt.datetime.now()
+                self.last_contracts_scan = n
             for c in contracts:
                 contract_id = c['id']
                 if contract_id not in self.all_contracts:
                     self.add_contract(c)
-                if c['is_next_day'] and not self.contract_is_expired(c) and self.contract_is_live(c):
+                if ('Swap' in c['label'] or c['is_next_day']) and not self.contract_is_expired(c) and self.contract_is_live(c):
+                    if not c['is_next_day']:
+                        logger.warning(f"Improper Swap without is_next_day set: {c}")
+                        c['is_next_day'] = True
                     self.next_day_contracts[c['underlying_asset']] = c
                     if asset == c['underlying_asset']:
                         next_day_contract = c
+            if next_day_contract is None and n == self.last_contracts_scan:
+                logger.info(f"Could not find {asset} in next_day_contracts {self.next_day_contracts}")
         return next_day_contract
 
 
@@ -1177,6 +1184,9 @@ class MarketState:
         logger.info(f"add_contract: new contract {contract}")
         contract_id = contract['id']
         self.all_contracts[contract_id] = contract
+        if 'Swap' in contract and not contract['is_next_day'] and not self.contract_is_expired(contract) and self.contract_is_live(contract):
+            logger.warning(f"Found Swap without proper is_next_day field: {contract}")
+            contract['is_next_day'] = True
 
         label = contract['label']
         self.label_to_contract_id[label] = contract_id
