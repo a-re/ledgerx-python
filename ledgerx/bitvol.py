@@ -137,7 +137,7 @@ class BitvolCache:
         if key in cls.cache:
             bitvol = cls.cache[key]
         else:
-            logger.info(f"No cache for {key} {cls.cache}")
+            logger.debug(f"No cache for {key} {cls.cache}")
         if bitvol is not None:
             then = cls.to_time(bitvol['time'])
             if timeout is not None and (now - then).total_seconds() > timeout:
