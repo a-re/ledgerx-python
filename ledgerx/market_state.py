@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MarketState:
 
     # Constant static variables
-    risk_free = 0.06 # 6% risk free interest 10/2023
+    risk_free = 0.065 # 6.5% risk free interest 10/2023
     timezone = dt.timezone.utc
     strptime_format = "%Y-%m-%d %H:%M:%S%z"
     seconds_per_year = 3600.0 * 24.0 * 365.0  # ignore leap year, okay?
